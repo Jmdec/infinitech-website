@@ -1,0 +1,1116 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Eye,
+  Filter,
+  Search,
+  User,
+  Mail,
+  Phone,
+  Building2,
+  Globe,
+  Send,
+  Loader,
+  Copy,
+  MessageSquare,
+  BarChart3,
+  Inbox,
+  CheckCircle2,
+  Trash2,
+} from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import jsPDF from "jspdf";
+
+interface WebsiteInquiry {
+  id: number;
+  name: string;
+  email: string;
+  phone: string | null;
+  company: string | null;
+  website: string;
+  details: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+const ITEMS_PER_PAGE = 10;
+
+const toUrl = (website: string) =>
+  website?.startsWith("http") ? website : `https://${website}`;
+
+export default function WebsiteInquiriesAdminPage() {
+  const router = useRouter();
+  const { toast } = useToast();
+  const [inquiries, setInquiries] = useState<WebsiteInquiry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [selectedInquiry, setSelectedInquiry] = useState<WebsiteInquiry | null>(
+    null,
+  );
+  const [inquiryToDelete, setInquiryToDelete] = useState<WebsiteInquiry | null>(
+    null,
+  );
+  const [deleting, setDeleting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterStatus, setFilterStatus] = useState("all");
+
+  const [sendingEmailId, setSendingEmailId] = useState<number | null>(null);
+  const [downloadingId, setDownloadingId] = useState<number | null>(null);
+
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false);
+  const [emailInquiry, setEmailInquiry] = useState<WebsiteInquiry | null>(null);
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailMessage, setEmailMessage] = useState("");
+
+  useEffect(() => {
+    const token = localStorage.getItem("adminSessionActive");
+    if (!token) {
+      router.push("/admin/login");
+      return;
+    }
+
+    fetchInquiries(token);
+  }, [router]);
+
+  const fetchInquiries = async (token: string) => {
+    try {
+      const response = await fetch("/api/website-inquiries", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch inquiries: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      let inquiriesData: WebsiteInquiry[] = [];
+      if (Array.isArray(data)) {
+        inquiriesData = data;
+      } else if (data.data) {
+        if (Array.isArray(data.data)) {
+          inquiriesData = data.data;
+        } else if (data.data.data && Array.isArray(data.data.data)) {
+          inquiriesData = data.data.data;
+        }
+      }
+
+      setInquiries(inquiriesData);
+    } catch (error) {
+      console.error("Error fetching inquiries:", error);
+      setMessage(
+        `Failed to load inquiries: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+      setInquiries([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const markAsRead = async (inquiry: WebsiteInquiry) => {
+    const token = localStorage.getItem("adminSessionActive");
+    if (!token) return;
+
+    try {
+      const response = await fetch(`/api/website-inquiries/${inquiry.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ is_read: true }),
+      });
+
+      if (!response.ok) throw new Error("Failed to update inquiry");
+
+      setInquiries((prev) =>
+        prev.map((i) => (i.id === inquiry.id ? { ...i, is_read: true } : i)),
+      );
+    } catch (error) {
+      console.error("Error marking inquiry as read:", error);
+    }
+  };
+
+  const openView = (inquiry: WebsiteInquiry) => {
+    setSelectedInquiry(inquiry);
+    if (!inquiry.is_read) markAsRead(inquiry);
+  };
+
+  const handleDeleteInquiry = async () => {
+    if (!inquiryToDelete) return;
+
+    const token = localStorage.getItem("adminSessionActive");
+    if (!token) return;
+
+    setDeleting(true);
+    try {
+      const response = await fetch(
+        `/api/website-inquiries/${inquiryToDelete.id}`,
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+
+      if (!response.ok) throw new Error("Failed to delete inquiry");
+
+      toast({
+        title: "Success",
+        description: `Inquiry from ${inquiryToDelete.name} deleted successfully!`,
+        variant: "default",
+      });
+
+      setInquiries((prev) => prev.filter((i) => i.id !== inquiryToDelete.id));
+      setInquiryToDelete(null);
+    } catch (error) {
+      console.error("Error deleting inquiry:", error);
+      toast({
+        title: "Error",
+        description: "Failed to delete inquiry. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const generatePDF = async (inquiry: WebsiteInquiry) => {
+    setDownloadingId(inquiry.id);
+    try {
+      const doc = new jsPDF();
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 12;
+      const tableWidth = pageWidth - margin * 2;
+      const labelWidth = 50;
+      const valueWidth = tableWidth - labelWidth;
+      let y = 20;
+
+      const colors = {
+        primaryDark: [15, 23, 42] as [number, number, number],
+        white: [255, 255, 255] as [number, number, number],
+        lightGray: [248, 250, 252] as [number, number, number],
+        borderGray: [226, 232, 240] as [number, number, number],
+        textDark: [30, 41, 59] as [number, number, number],
+        textMuted: [71, 85, 105] as [number, number, number],
+      };
+
+      const addHeader = () => {
+        doc.setFillColor(255, 255, 255);
+        doc.rect(0, 0, pageWidth, 45, "F");
+
+        doc.setTextColor(...colors.primaryDark);
+        doc.setFontSize(16);
+        doc.setFont("helvetica", "bold");
+        doc.text("Website Audit Inquiry", pageWidth / 2, 15, {
+          align: "center",
+        });
+
+        doc.setTextColor(...colors.textMuted);
+        doc.setFontSize(12);
+        doc.setFont("helvetica", "normal");
+        doc.text("Client Submission Details", pageWidth / 2, 25, {
+          align: "center",
+        });
+
+        doc.setFontSize(8);
+        doc.text(`Inquiry ID: ${inquiry.id}`, pageWidth / 2, 32, {
+          align: "center",
+        });
+        doc.text(
+          `Date: ${new Date(inquiry.created_at).toLocaleDateString()}`,
+          pageWidth / 2,
+          38,
+          { align: "center" },
+        );
+      };
+
+      const addFooter = (pageNum: number, totalPages: number) => {
+        doc.setFillColor(255, 255, 255);
+        doc.rect(0, pageHeight - 18, pageWidth, 18, "F");
+
+        doc.setDrawColor(...colors.borderGray);
+        doc.line(margin, pageHeight - 18, pageWidth - margin, pageHeight - 18);
+
+        doc.setTextColor(...colors.textDark);
+        doc.setFontSize(8);
+        doc.setFont("helvetica", "bold");
+        doc.text("Website Audit Inquiries", pageWidth / 2, pageHeight - 12, {
+          align: "center",
+        });
+
+        doc.setTextColor(...colors.textMuted);
+        doc.setFontSize(7);
+        doc.text(
+          `Page ${pageNum} of ${totalPages}`,
+          pageWidth - margin,
+          pageHeight - 6,
+          { align: "right" },
+        );
+      };
+
+      const checkPageBreak = (height: number) => {
+        if (y + height > pageHeight - 25) {
+          doc.addPage();
+          y = 15;
+        }
+      };
+
+      const addSectionHeader = (title: string) => {
+        checkPageBreak(8);
+        doc.setFillColor(...colors.primaryDark);
+        doc.rect(margin, y, tableWidth, 7, "F");
+        doc.setDrawColor(...colors.borderGray);
+        doc.rect(margin, y, tableWidth, 7, "S");
+        doc.setTextColor(...colors.white);
+        doc.setFontSize(8);
+        doc.setFont("helvetica", "bold");
+        doc.text(title, margin + 3, y + 5);
+        y += 7;
+      };
+
+      const addTableRow = (label: string, value: string, isAlt = false) => {
+        checkPageBreak(7);
+        const rowHeight = 7;
+        const bgColor = isAlt ? colors.lightGray : colors.white;
+
+        doc.setFillColor(bgColor[0], bgColor[1], bgColor[2]);
+        doc.rect(margin, y, tableWidth, rowHeight, "F");
+        doc.setDrawColor(...colors.borderGray);
+        doc.rect(margin, y, labelWidth, rowHeight, "S");
+        doc.rect(margin + labelWidth, y, valueWidth, rowHeight, "S");
+
+        doc.setTextColor(...colors.textMuted);
+        doc.setFontSize(8);
+        doc.setFont("helvetica", "bold");
+        doc.text(label, margin + 2, y + 5);
+
+        doc.setTextColor(...colors.textDark);
+        doc.setFont("helvetica", "normal");
+        const truncatedValue =
+          value && value.length > 80
+            ? value.substring(0, 77) + "..."
+            : value || "N/A";
+        doc.text(truncatedValue, margin + labelWidth + 2, y + 5);
+
+        y += rowHeight;
+      };
+
+      const addMultilineRow = (label: string, value: string, isAlt = false) => {
+        if (!value) return;
+        doc.setFontSize(8);
+        const lines = doc.splitTextToSize(value, valueWidth - 4);
+        const rowHeight = Math.max(7, lines.length * 4 + 3);
+
+        checkPageBreak(rowHeight);
+        const bgColor = isAlt ? colors.lightGray : colors.white;
+
+        doc.setFillColor(bgColor[0], bgColor[1], bgColor[2]);
+        doc.rect(margin, y, tableWidth, rowHeight, "F");
+        doc.setDrawColor(...colors.borderGray);
+        doc.rect(margin, y, labelWidth, rowHeight, "S");
+        doc.rect(margin + labelWidth, y, valueWidth, rowHeight, "S");
+
+        doc.setTextColor(...colors.textMuted);
+        doc.setFont("helvetica", "bold");
+        doc.text(label, margin + 2, y + 5);
+
+        doc.setTextColor(...colors.textDark);
+        doc.setFont("helvetica", "normal");
+        for (let i = 0; i < lines.length; i++) {
+          doc.text(lines[i], margin + labelWidth + 2, y + 5 + i * 4);
+        }
+
+        y += rowHeight;
+      };
+
+      addHeader();
+      y = 48;
+
+      addSectionHeader("CONTACT INFORMATION");
+      addTableRow("Full Name", inquiry.name, false);
+      addTableRow("Email", inquiry.email, true);
+      addTableRow("Phone", inquiry.phone || "N/A", false);
+      addTableRow("Company", inquiry.company || "N/A", true);
+
+      addSectionHeader("WEBSITE DETAILS");
+      addTableRow("Website URL", inquiry.website, false);
+      addMultilineRow("Focus Areas", inquiry.details || "N/A", true);
+
+      const pageCount = doc.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        addFooter(i, pageCount);
+      }
+
+      doc.save(
+        `website-inquiry-${inquiry.id}-${inquiry.name.replace(/\s+/g, "-").toLowerCase()}.pdf`,
+      );
+
+      toast({
+        title: "Success",
+        description: "PDF downloaded successfully!",
+        variant: "default",
+      });
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      toast({
+        title: "Error",
+        description: "Error generating PDF.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloadingId(null);
+    }
+  };
+
+  const openEmailDialog = (inquiry: WebsiteInquiry) => {
+    setEmailInquiry(inquiry);
+    setEmailSubject(
+      `Your Website Audit Request - ${inquiry.company || inquiry.name}`,
+    );
+    setEmailMessage(`Dear ${inquiry.name},
+
+Thank you for requesting a website audit for ${inquiry.website}.
+
+We've received your submission and our team will review your site${
+      inquiry.details ? ` with a focus on: ${inquiry.details}` : ""
+    }. We'll follow up shortly with our findings and recommendations.
+
+If you have any questions in the meantime, feel free to reach out.
+
+Best regards,
+The Team`);
+    setEmailDialogOpen(true);
+  };
+
+  const sendInquiryEmail = async () => {
+    if (!emailInquiry?.email) {
+      toast({
+        title: "Error",
+        description: "Inquiry has no email address!",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const token = localStorage.getItem("adminSessionActive");
+    if (!token) return;
+
+    setSendingEmailId(emailInquiry.id);
+    try {
+      const response = await fetch("/api/send-inquiry-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          to: emailInquiry.email,
+          subject: emailSubject,
+          message: emailMessage,
+          inquiryId: emailInquiry.id,
+          inquiryData: emailInquiry,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to send email");
+      }
+
+      toast({
+        title: "Success",
+        description: `Email sent to ${emailInquiry.name}!`,
+        variant: "default",
+      });
+      setEmailDialogOpen(false);
+      setEmailInquiry(null);
+      setEmailSubject("");
+      setEmailMessage("");
+    } catch (error) {
+      console.error("Error sending email:", error);
+      toast({
+        title: "Error",
+        description: "Failed to send email. Check SMTP configuration.",
+        variant: "destructive",
+      });
+    } finally {
+      setSendingEmailId(null);
+    }
+  };
+
+  const query = searchQuery.toLowerCase();
+
+  const filteredInquiries = inquiries.filter((inquiry) => {
+    const matchesSearch =
+      inquiry.name?.toLowerCase().includes(query) ||
+      inquiry.email?.toLowerCase().includes(query) ||
+      inquiry.company?.toLowerCase().includes(query) ||
+      inquiry.website?.toLowerCase().includes(query) ||
+      inquiry.phone?.toLowerCase().includes(query);
+
+    const matchesStatus =
+      filterStatus === "all" ||
+      (filterStatus === "new" && !inquiry.is_read) ||
+      (filterStatus === "read" && inquiry.is_read);
+
+    return matchesSearch && matchesStatus;
+  });
+
+  const stats = {
+    total: inquiries.length,
+    unread: inquiries.filter((i) => !i.is_read).length,
+    read: inquiries.filter((i) => i.is_read).length,
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading inquiries...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const totalPages = Math.ceil(filteredInquiries.length / ITEMS_PER_PAGE);
+  // Stay on a valid page after a delete or filter shrinks the list.
+  const page = Math.min(currentPage, Math.max(totalPages, 1));
+  const startIndex = (page - 1) * ITEMS_PER_PAGE;
+  const endIndex = startIndex + ITEMS_PER_PAGE;
+  const paginatedInquiries = filteredInquiries.slice(startIndex, endIndex);
+
+  const statCards = [
+    {
+      label: "Total Inquiries",
+      value: stats.total,
+      icon: BarChart3,
+      border: "border-slate-200",
+      valueColor: "text-slate-900",
+      iconBg: "from-blue-500 to-purple-500",
+    },
+    {
+      label: "New",
+      value: stats.unread,
+      icon: Inbox,
+      border: "border-blue-200",
+      valueColor: "text-blue-600",
+      iconBg: "from-blue-500 to-blue-600",
+    },
+    {
+      label: "Read",
+      value: stats.read,
+      icon: CheckCircle2,
+      border: "border-purple-200",
+      valueColor: "text-purple-600",
+      iconBg: "from-purple-500 to-purple-600",
+    },
+    {
+      label: "Read Rate",
+      value: `${
+        stats.total > 0 ? Math.round((stats.read / stats.total) * 100) : 0
+      }%`,
+      icon: BarChart3,
+      border: "border-green-200",
+      valueColor: "text-green-600",
+      iconBg: "from-green-500 to-green-600",
+    },
+  ];
+
+  return (
+    <div className="min-h-full bg-gradient-to-br from-slate-50 via-blue-50/30 to-purple-50/20">
+      {/* Header banner */}
+      <div className="w-full px-3 sm:px-4 pt-4">
+        <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-3xl shadow-lg px-6 sm:px-8 py-8">
+          <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+            <div>
+              <h1 className="text-3xl sm:text-4xl font-bold text-white mb-2 flex items-center gap-3">
+                <Globe className="h-8 w-8 sm:h-10 sm:w-10" />
+                Website Audit Inquiries
+              </h1>
+              <p className="text-blue-100">
+                View and manage all website audit requests
+              </p>
+            </div>
+            <Link href="/admin/dashboard">
+              <Button
+                variant="secondary"
+                className="bg-white hover:bg-gray-100 text-blue-900"
+              >
+                Back to Dashboard
+              </Button>
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      <div className="w-full px-3 sm:px-4 py-6">
+        {/* Stats cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6 mb-8">
+          {statCards.map(
+            ({ label, value, icon: Icon, border, valueColor, iconBg }) => (
+              <Card
+                key={label}
+                className={`border-2 ${border} bg-white hover:shadow-lg transition-shadow`}
+              >
+                <CardContent className="p-4 sm:p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs sm:text-sm font-medium text-slate-600 mb-1">
+                        {label}
+                      </p>
+                      <p
+                        className={`text-2xl sm:text-3xl font-bold ${valueColor}`}
+                      >
+                        {value}
+                      </p>
+                    </div>
+                    <div
+                      className={`p-2 sm:p-3 bg-gradient-to-br ${iconBg} rounded-xl`}
+                    >
+                      <Icon className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ),
+          )}
+        </div>
+
+        {message && (
+          <Alert
+            className="mb-6 border-2"
+            variant={
+              message.includes("successfully") ? "default" : "destructive"
+            }
+          >
+            <AlertDescription className="font-medium">
+              {message}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Inquiries table */}
+        <Card className="border-2 border-slate-200 shadow-xl bg-white overflow-hidden">
+          <CardHeader className="border-b bg-gradient-to-r from-slate-50 to-blue-50/30 px-4 sm:px-6">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div>
+                <CardTitle className="text-xl sm:text-2xl flex items-center gap-2 text-slate-900">
+                  <Globe className="h-5 w-5 sm:h-6 sm:w-6 text-blue-600" />
+                  Inquiry Submissions
+                </CardTitle>
+                <CardDescription className="mt-1 text-slate-600">
+                  {filteredInquiries.length === 0
+                    ? "Showing 0 of 0"
+                    : `Showing ${startIndex + 1}-${Math.min(
+                        endIndex,
+                        filteredInquiries.length,
+                      )} of ${filteredInquiries.length}`}
+                </CardDescription>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <div className="relative flex-1 sm:min-w-[260px]">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                  <Input
+                    placeholder="Search name, email, company, website..."
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    className="pl-9 border-2 bg-white"
+                  />
+                </div>
+                <Select
+                  value={filterStatus}
+                  onValueChange={(value) => {
+                    setFilterStatus(value);
+                    setCurrentPage(1);
+                  }}
+                >
+                  <SelectTrigger className="w-full sm:w-[200px] border-2 bg-white">
+                    <Filter className="h-4 w-4 mr-2" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="z-[100] bg-white border-2 shadow-xl">
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="new">New</SelectItem>
+                    <SelectItem value="read">Read</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </CardHeader>
+
+          <CardContent className="p-0">
+            <div className="w-full overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-slate-50 hover:bg-slate-50">
+                    <TableHead className="font-semibold text-slate-700 px-4 sm:px-6 py-3">
+                      Name
+                    </TableHead>
+                    <TableHead className="font-semibold text-slate-700 px-4 py-3">
+                      Status
+                    </TableHead>
+                    <TableHead className="font-semibold text-slate-700 hidden md:table-cell px-4 py-3">
+                      Company
+                    </TableHead>
+                    <TableHead className="font-semibold text-slate-700 hidden lg:table-cell px-4 py-3">
+                      Email
+                    </TableHead>
+                    <TableHead className="font-semibold text-slate-700 hidden xl:table-cell px-4 py-3">
+                      Phone
+                    </TableHead>
+                    <TableHead className="font-semibold text-slate-700 hidden md:table-cell px-4 py-3">
+                      Website
+                    </TableHead>
+                    <TableHead className="font-semibold text-slate-700 hidden sm:table-cell px-4 py-3">
+                      Submitted
+                    </TableHead>
+                    <TableHead className="font-semibold text-slate-700 px-4 sm:px-6 py-3">
+                      Actions
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {paginatedInquiries.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center py-12 px-4">
+                        <div className="flex flex-col items-center gap-2">
+                          <Inbox className="h-12 w-12 text-slate-300" />
+                          <p className="text-slate-600 font-medium">
+                            No inquiries found
+                          </p>
+                          <p className="text-sm text-slate-500">
+                            Try adjusting your search or filters
+                          </p>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    paginatedInquiries.map((inquiry) => (
+                      <TableRow
+                        key={inquiry.id}
+                        className="hover:bg-blue-50/50 transition-colors"
+                      >
+                        <TableCell className="font-medium text-slate-900 px-4 sm:px-6 py-3">
+                          <div className="flex items-center gap-3">
+                            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white text-sm font-medium flex-shrink-0">
+                              {inquiry.name?.charAt(0)?.toUpperCase() || "?"}
+                            </div>
+                            <span className="truncate max-w-[180px]">
+                              {inquiry.name}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="px-4 py-3">
+                          {inquiry.is_read ? (
+                            <Badge variant="secondary">Read</Badge>
+                          ) : (
+                            <Badge className="bg-blue-600 hover:bg-blue-700">
+                              New
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell px-4 py-3 text-sm text-slate-700">
+                          {inquiry.company || "N/A"}
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell px-4 py-3 text-sm text-blue-600">
+                          {inquiry.email}
+                        </TableCell>
+                        <TableCell className="hidden xl:table-cell px-4 py-3 text-sm text-slate-700">
+                          {inquiry.phone || "N/A"}
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell px-4 py-3 text-sm max-w-[160px] truncate">
+                          <a
+                            href={toUrl(inquiry.website)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            {inquiry.website}
+                          </a>
+                        </TableCell>
+                        <TableCell className="hidden sm:table-cell px-4 py-3 text-sm text-slate-600">
+                          {new Date(inquiry.created_at).toLocaleDateString()}
+                        </TableCell>
+                        <TableCell className="px-4 sm:px-6 py-3">
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openView(inquiry)}
+                              className="border-2 border-blue-200 text-slate-800 hover:bg-blue-50 hover:text-blue-700"
+                            >
+                              <Eye className="h-4 w-4" />
+                              <span className="hidden sm:inline ml-1">
+                                View
+                              </span>
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => generatePDF(inquiry)}
+                              disabled={downloadingId === inquiry.id}
+                              className="border-2 border-green-200 text-slate-800 hover:bg-green-50 hover:text-green-700"
+                            >
+                              {downloadingId === inquiry.id ? (
+                                <Loader className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Download className="h-4 w-4" />
+                              )}
+                              <span className="hidden sm:inline ml-1">PDF</span>
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openEmailDialog(inquiry)}
+                              disabled={
+                                sendingEmailId === inquiry.id || !inquiry.email
+                              }
+                              className="border-2 border-blue-200 text-slate-800 hover:bg-blue-50 hover:text-blue-700"
+                            >
+                              {sendingEmailId === inquiry.id ? (
+                                <Loader className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Send className="h-4 w-4" />
+                              )}
+                              <span className="hidden sm:inline ml-1">
+                                Email
+                              </span>
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setInquiryToDelete(inquiry)}
+                              className="border-2 border-red-200 text-slate-800 hover:bg-red-50 hover:text-red-700"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex justify-center items-center gap-2 mt-6">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCurrentPage(Math.max(page - 1, 1))}
+              disabled={page === 1}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <div className="text-sm font-medium text-slate-700">
+              Page {page} of {totalPages}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCurrentPage(Math.min(page + 1, totalPages))}
+              disabled={page === totalPages}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* View details dialog (one dialog for the whole page) */}
+      <Dialog
+        open={!!selectedInquiry}
+        onOpenChange={(open) => {
+          if (!open) setSelectedInquiry(null);
+        }}
+      >
+        <DialogContent className="max-w-[92vw] sm:max-w-md max-h-[85vh] overflow-y-auto border-2 bg-white text-slate-900 p-0 gap-0">
+          {selectedInquiry && (
+            <div className="space-y-0">
+              <div className="bg-gradient-to-r from-blue-600 to-purple-600 px-4 py-3 pr-12 text-white">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-9 w-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+                    <User className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <DialogTitle className="text-base font-bold truncate text-white">
+                      {selectedInquiry.name}
+                    </DialogTitle>
+                    <DialogDescription className="text-xs text-white/80 truncate">
+                      {selectedInquiry.company || "Website audit inquiry"}
+                    </DialogDescription>
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-4 py-3 space-y-3">
+                <div className="space-y-1.5">
+                  <h3 className="text-[10px] uppercase tracking-widest font-semibold text-slate-500">
+                    Contact
+                  </h3>
+
+                  <div className="flex items-center justify-between p-2 bg-slate-50 rounded-md">
+                    <a
+                      href={`mailto:${selectedInquiry.email}`}
+                      className="flex items-center gap-1.5 text-xs text-blue-600 hover:underline break-all"
+                    >
+                      <Mail className="h-3.5 w-3.5 flex-shrink-0" />
+                      {selectedInquiry.email}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navigator.clipboard.writeText(selectedInquiry.email)
+                      }
+                      className="p-1 hover:bg-slate-200 rounded flex-shrink-0"
+                      aria-label="Copy email"
+                    >
+                      <Copy className="h-3 w-3 text-slate-500" />
+                    </button>
+                  </div>
+
+                  {selectedInquiry.phone && (
+                    <div className="flex items-center justify-between p-2 bg-slate-50 rounded-md">
+                      <a
+                        href={`tel:${selectedInquiry.phone}`}
+                        className="flex items-center gap-1.5 text-xs text-blue-600 hover:underline"
+                      >
+                        <Phone className="h-3.5 w-3.5 flex-shrink-0" />
+                        {selectedInquiry.phone}
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          navigator.clipboard.writeText(selectedInquiry.phone!)
+                        }
+                        className="p-1 hover:bg-slate-200 rounded flex-shrink-0"
+                        aria-label="Copy phone"
+                      >
+                        <Copy className="h-3 w-3 text-slate-500" />
+                      </button>
+                    </div>
+                  )}
+
+                  {selectedInquiry.company && (
+                    <div className="flex items-center gap-1.5 p-2 bg-slate-50 rounded-md text-xs">
+                      <Building2 className="h-3.5 w-3.5 flex-shrink-0 text-slate-500" />
+                      {selectedInquiry.company}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between p-2 bg-slate-50 rounded-md">
+                    <a
+                      href={toUrl(selectedInquiry.website)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 text-xs text-blue-600 hover:underline break-all"
+                    >
+                      <Globe className="h-3.5 w-3.5 flex-shrink-0" />
+                      {selectedInquiry.website}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navigator.clipboard.writeText(selectedInquiry.website)
+                      }
+                      className="p-1 hover:bg-slate-200 rounded flex-shrink-0"
+                      aria-label="Copy website"
+                    >
+                      <Copy className="h-3 w-3 text-slate-500" />
+                    </button>
+                  </div>
+                </div>
+
+                {selectedInquiry.details && (
+                  <div className="space-y-1">
+                    <h3 className="text-[10px] uppercase tracking-widest font-semibold text-slate-500 flex items-center gap-1.5">
+                      <MessageSquare className="h-3 w-3" />
+                      Focus Areas
+                    </h3>
+                    <p className="text-xs bg-slate-50 rounded-md p-2 leading-relaxed max-h-24 overflow-y-auto whitespace-pre-wrap">
+                      {selectedInquiry.details}
+                    </p>
+                  </div>
+                )}
+
+                <p className="text-[10px] text-slate-500">
+                  Submitted{" "}
+                  {new Date(selectedInquiry.created_at).toLocaleString()}
+                </p>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation dialog (one dialog for the whole page) */}
+      <Dialog
+        open={!!inquiryToDelete}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setInquiryToDelete(null);
+        }}
+      >
+        <DialogContent className="bg-white text-slate-900">
+          <DialogHeader>
+            <DialogTitle>Delete Inquiry</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the inquiry from{" "}
+              {inquiryToDelete?.name}? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-3 mt-6">
+            <Button
+              variant="outline"
+              onClick={() => setInquiryToDelete(null)}
+              disabled={deleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteInquiry}
+              disabled={deleting}
+            >
+              {deleting ? (
+                <Loader className="h-4 w-4 mr-2 animate-spin" />
+              ) : null}
+              Delete
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Email dialog */}
+      <Dialog
+        open={emailDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && sendingEmailId !== null) return;
+          setEmailDialogOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-2xl bg-white text-slate-900">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="h-5 w-5 text-blue-600" />
+              Send Email to {emailInquiry?.name || "User"}
+            </DialogTitle>
+            <DialogDescription>
+              Compose your message to {emailInquiry?.email}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="email-to">To</Label>
+              <Input
+                id="email-to"
+                value={emailInquiry?.email || ""}
+                disabled
+                className="bg-slate-50"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="email-subject">Subject</Label>
+              <Input
+                id="email-subject"
+                value={emailSubject}
+                onChange={(e) => setEmailSubject(e.target.value)}
+                placeholder="Enter email subject..."
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="email-message">Message</Label>
+              <Textarea
+                id="email-message"
+                value={emailMessage}
+                onChange={(e) => setEmailMessage(e.target.value)}
+                placeholder="Enter your message..."
+                rows={10}
+                className="resize-none"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEmailDialogOpen(false)}
+              disabled={sendingEmailId !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={sendInquiryEmail}
+              disabled={
+                sendingEmailId !== null || !emailSubject || !emailMessage
+              }
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              {sendingEmailId !== null ? (
+                <>
+                  <Loader className="h-4 w-4 mr-2 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-2" />
+                  Send Email
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

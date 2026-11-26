@@ -1,0 +1,2625 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  addDays,
+  addMonths,
+  differenceInCalendarDays,
+  endOfMonth,
+  format,
+  isSameDay,
+  isSameMonth,
+  startOfMonth,
+  startOfWeek,
+  subMonths,
+} from "date-fns";
+import {
+  CalendarDays,
+  CalendarRange,
+  Eye,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  List,
+  Loader2,
+  Paperclip,
+  Pencil,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  X,
+} from "lucide-react";
+// import EmployeeLeaveRequestView, {
+//   useLeaveViewMode,
+// } from "./employee-leave-view";
+import toast from "react-hot-toast";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+const PENDING = "Pending review";
+const UNAPPROVED = "Unapproved absence";
+const APPROVED_LWOP = "Approved leave without pay";
+const APPROVED_CREDITS = "Approved (Leave Credits)";
+const CANCELLED = "Cancelled";
+
+type LeaveStatus =
+  | "Pending review"
+  | "Unapproved absence"
+  | "Approved leave without pay"
+  | "Approved (Leave Credits)"
+  | "Cancelled";
+
+const isApproved = (status: LeaveStatus) => status.startsWith("Approved");
+
+type LeaveRecord = {
+  id: number;
+  employee_id: number;
+  employee_number: string;
+  employee_name: string;
+  employee_search_name: string;
+  /** Employee's current status (e.g. "Active"). Leaves of inactive employees are still listed. */
+  employee_status?: string | null;
+  department: string;
+  position: string;
+  leave_type: string;
+  other_leave_type: string | null;
+  start_date: string;
+  end_date: string;
+  number_of_days: number;
+  half_day_period: "AM" | "PM" | null;
+  early_leave_time: string | null;
+  reason: string;
+  approved_by: number | null;
+  approver_name: string | null;
+  status: LeaveStatus;
+  has_proof: boolean;
+  created_at: string;
+  updated_at: string;
+};
+type EmployeeOption = {
+  id: number;
+  employee_id: string;
+  name: string;
+  position: string;
+  status?: string | null;
+  department: string;
+};
+type ApproverOption = {
+  id: number;
+  name: string;
+  department: string;
+  position: string;
+};
+type LeaveForm = {
+  employee_id: string;
+  employee_number: string;
+  leave_type: string;
+  other_leave_type: string;
+  start_date: string;
+  end_date: string;
+  half_day_period: "AM" | "PM" | "";
+  early_leave_time: string;
+  reason: string;
+  approved_by: string;
+  proof: File | null;
+};
+
+const STATUSES: LeaveStatus[] = [
+  PENDING,
+  UNAPPROVED,
+  APPROVED_LWOP,
+  APPROVED_CREDITS,
+  CANCELLED,
+];
+const MARK_OPTIONS: LeaveStatus[] = [
+  PENDING,
+  UNAPPROVED,
+  APPROVED_LWOP,
+  APPROVED_CREDITS,
+];
+const EMPTY_FORM: LeaveForm = {
+  employee_id: "",
+  employee_number: "",
+  leave_type: "",
+  other_leave_type: "",
+  start_date: "",
+  end_date: "",
+  half_day_period: "",
+  early_leave_time: "",
+  reason: "",
+  approved_by: "",
+  proof: null,
+};
+const STATUS_STYLES: Record<LeaveStatus, string> = {
+  "Pending review": "bg-amber-50 text-amber-800 ring-amber-600/20",
+  "Unapproved absence": "bg-rose-50 text-rose-800 ring-rose-600/20",
+  "Approved leave without pay": "bg-sky-50 text-sky-800 ring-sky-600/20",
+  "Approved (Leave Credits)":
+    "bg-emerald-50 text-emerald-800 ring-emerald-600/20",
+  Cancelled: "bg-slate-50 text-slate-700 ring-slate-500/20",
+};
+const STATUS_DOT: Record<LeaveStatus, string> = {
+  "Pending review": "bg-amber-500",
+  "Unapproved absence": "bg-rose-500",
+  "Approved leave without pay": "bg-sky-500",
+  "Approved (Leave Credits)": "bg-emerald-500",
+  Cancelled: "bg-slate-400",
+};
+
+function barStyle(status: LeaveStatus) {
+  if (status === PENDING)
+    return "border border-dashed border-amber-500 bg-amber-50 text-amber-950 hover:bg-amber-100";
+  if (status === APPROVED_LWOP)
+    return "bg-sky-100 text-sky-950 hover:bg-sky-200";
+  return "bg-emerald-100 text-emerald-950 hover:bg-emerald-200";
+}
+
+const MAX_LANES = 3;
+type Segment = {
+  leave: LeaveRecord;
+  startCol: number;
+  endCol: number;
+  lane: number;
+  clipStart: boolean;
+  clipEnd: boolean;
+};
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const PAGE_SIZE = 10;
+const EARLY_LEAVE = "Early Leave";
+// Replaces the old "Other" leave type. It asks for a "Specify leave type" text.
+const PERSONAL_LEAVE = "Personal Leave";
+
+const selectClass =
+  "h-9 w-full rounded-md border border-input bg-white px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-cyan-600 disabled:opacity-60";
+const textareaClass =
+  "w-full rounded-md border border-input bg-white px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-cyan-600";
+
+// Layout that must not depend on generated Tailwind utilities, so the
+// calendar keeps its shape even if the stylesheet is stale.
+const GRID_7: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+};
+
+const TAB_STYLE: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  whiteSpace: "nowrap",
+};
+
+function layoutWeek(
+  weekDays: Date[],
+  records: LeaveRecord[],
+  maxLanes = MAX_LANES,
+) {
+  const first = dateValue(weekDays[0]);
+  const last = dateValue(weekDays[6]);
+  const laneEnds: number[] = [];
+  const segments: Segment[] = records
+    .filter((l) => l.start_date <= last && l.end_date >= first)
+    .sort(
+      (a, b) =>
+        a.start_date.localeCompare(b.start_date) ||
+        b.end_date.localeCompare(a.end_date) ||
+        a.employee_name.localeCompare(b.employee_name),
+    )
+    .map((leave) => {
+      const clipStart = leave.start_date < first;
+      const clipEnd = leave.end_date > last;
+      const startCol = differenceInCalendarDays(
+        parseDay(clipStart ? first : leave.start_date),
+        weekDays[0],
+      );
+      const endCol = differenceInCalendarDays(
+        parseDay(clipEnd ? last : leave.end_date),
+        weekDays[0],
+      );
+      let lane = laneEnds.findIndex((end) => end < startCol);
+      if (lane === -1) lane = laneEnds.length;
+      laneEnds[lane] = endCol;
+      return { leave, startCol, endCol, lane, clipStart, clipEnd };
+    });
+  const overflow = weekDays.map(
+    (_, col) =>
+      segments.filter(
+        (s) => s.lane >= maxLanes && s.startCol <= col && s.endCol >= col,
+      ).length,
+  );
+  const rows =
+    Math.min(laneEnds.length, maxLanes) + (overflow.some((n) => n > 0) ? 1 : 0);
+  return { segments, overflow, rows };
+}
+
+async function readJson<T>(response: Response): Promise<T> {
+  const data = await response.json();
+  if (!response.ok) {
+    const errors = data.errors
+      ? Object.values(data.errors as Record<string, string[]>)
+          .flat()
+          .join(" ")
+      : "";
+    throw new Error(
+      errors || data.message || "The request could not be completed.",
+    );
+  }
+  return data as T;
+}
+
+function adminFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  const token =
+    typeof window !== "undefined"
+      ? localStorage.getItem("adminSessionActive")
+      : null;
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
+
+function dateValue(date: Date) {
+  return format(date, "yyyy-MM-dd");
+}
+
+function parseDay(value: string) {
+  return new Date(`${value}T00:00:00`);
+}
+
+function formatRange(start: string, end: string) {
+  const s = parseDay(start);
+  const e = parseDay(end);
+  if (start === end) return format(s, "MMM d, yyyy");
+  if (s.getFullYear() === e.getFullYear() && s.getMonth() === e.getMonth())
+    return `${format(s, "MMM d")}–${format(e, "d, yyyy")}`;
+  if (s.getFullYear() === e.getFullYear())
+    return `${format(s, "MMM d")} – ${format(e, "MMM d, yyyy")}`;
+  return `${format(s, "MMM d, yyyy")} – ${format(e, "MMM d, yyyy")}`;
+}
+
+function leaveTypeLabel(
+  leave: Pick<LeaveRecord, "leave_type" | "other_leave_type">,
+) {
+  return leave.other_leave_type
+    ? `${leave.leave_type} — ${leave.other_leave_type}`
+    : leave.leave_type;
+}
+
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+}
+
+// Leaves of inactive employees are still listed, so mark them.
+const isInactive = (leave: Pick<LeaveRecord, "employee_status">) =>
+  !!leave.employee_status && leave.employee_status.toLowerCase() !== "active";
+
+function pluralDays(count: number) {
+  if (count === 0.5) return "0.5 day";
+  return `${count} ${count === 1 ? "day" : "days"}`;
+}
+
+function leaveDurationLabel(
+  leave: Pick<
+    LeaveRecord,
+    "number_of_days" | "half_day_period" | "early_leave_time"
+  >,
+) {
+  if (leave.early_leave_time) {
+    const [h, m] = leave.early_leave_time.split(":").map(Number);
+    return `Early leave (${format(new Date(2000, 0, 1, h, m), "h:mm a")})`;
+  }
+  return leave.half_day_period
+    ? `Half day (${leave.half_day_period})`
+    : pluralDays(leave.number_of_days);
+}
+
+function StatusBadge({ status }: { status: LeaveStatus }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_STYLES[status]}`}
+    >
+      <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[status]}`} />
+      {status}
+    </span>
+  );
+}
+
+function Avatar({ name, size = "md" }: { name: string; size?: "sm" | "md" }) {
+  return (
+    <span
+      aria-hidden
+      className={`inline-flex shrink-0 items-center justify-center rounded-full bg-cyan-100 font-semibold text-cyan-900 ${size === "sm" ? "h-8 w-8 text-xs" : "h-10 w-10 text-sm"}`}
+    >
+      {initials(name)}
+    </span>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  required,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block space-y-1.5 text-sm font-medium text-slate-800">
+      <span>
+        {label}
+        {required && (
+          <span className="ml-0.5 text-rose-600" aria-hidden>
+            {" "}
+            *
+          </span>
+        )}
+      </span>
+      {children}
+      {hint && (
+        <span className="block text-xs font-normal text-slate-500">{hint}</span>
+      )}
+    </label>
+  );
+}
+
+function LeaveRow({
+  leave,
+  onOpen,
+}: {
+  leave: LeaveRecord;
+  onOpen: (leave: LeaveRecord) => void;
+}) {
+  return (
+    <button
+      onClick={() => onOpen(leave)}
+      className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-600"
+    >
+      <Avatar name={leave.employee_name} size="sm" />
+
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-slate-900">
+          {leave.employee_name}
+          {isInactive(leave) && (
+            <span className="ml-1.5 text-xs font-normal text-slate-400">
+              · Inactive
+            </span>
+          )}
+        </p>
+        <p className="truncate text-xs text-slate-500">
+          {leaveTypeLabel(leave)} ·{" "}
+          {formatRange(leave.start_date, leave.end_date)}
+        </p>
+      </div>
+      <StatusBadge status={leave.status} />
+    </button>
+  );
+}
+
+export default function LeaveRequestsPage() {
+  const [records, setRecords] = useState<LeaveRecord[]>([]);
+  const [leaveTypes, setLeaveTypes] = useState<string[]>([]);
+  const [employees, setEmployees] = useState<EmployeeOption[]>([]);
+  const [approvers, setApprovers] = useState<ApproverOption[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [view, setView] = useState<"calendar" | "week" | "list">("calendar");
+  const [month, setMonth] = useState(startOfMonth(new Date()));
+  const [search, setSearch] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [employeeFilter, setEmployeeFilter] = useState("");
+  const [departmentFilter, setDepartmentFilter] = useState("All");
+  const [typeFilter, setTypeFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [fromFilter, setFromFilter] = useState("");
+  const [toFilter, setToFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const [sortAscending, setSortAscending] = useState(true);
+  const [sortBy, setSortBy] = useState<"date" | "type">("date");
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<LeaveRecord | null>(null);
+  const [form, setForm] = useState<LeaveForm>(EMPTY_FORM);
+  const [employeeQuery, setEmployeeQuery] = useState("");
+  const [selectedEmployee, setSelectedEmployee] =
+    useState<EmployeeOption | null>(null);
+  const [selectedRecord, setSelectedRecord] = useState<LeaveRecord | null>(
+    null,
+  );
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [dayPopup, setDayPopup] = useState<Date | null>(null);
+  const [typeDialogOpen, setTypeDialogOpen] = useState(false);
+  const [newLeaveType, setNewLeaveType] = useState("");
+  const [savingType, setSavingType] = useState(false);
+  const [detailApprover, setDetailApprover] = useState("");
+  const [savingApprover, setSavingApprover] = useState(false);
+  const [creditInfo, setCreditInfo] = useState<{
+    eligible: boolean;
+    remaining: number;
+    eligible_on: string;
+  } | null>(null);
+  const [creditLoading, setCreditLoading] = useState(false);
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      // The API returns leaves of ALL employees, active or not.
+      const leaveResponse = await adminFetch("/api/admin/leave-requests", {
+        cache: "no-store",
+      });
+      const leaveData = await readJson<{ data: LeaveRecord[] }>(leaveResponse);
+      setRecords(leaveData.data);
+
+      const typesResponse = await adminFetch(
+        "/api/admin/leave-requests?resource=types",
+        { cache: "no-store" },
+      );
+      const typeData = await readJson<{ data: string[] }>(typesResponse);
+      setLeaveTypes(typeData.data);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to load leave monitoring.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [
+    search,
+    employeeFilter,
+    departmentFilter,
+    typeFilter,
+    statusFilter,
+    fromFilter,
+    toFilter,
+  ]);
+
+  useEffect(() => {
+    const query = employeeQuery.trim();
+    if (!query || selectedEmployee?.employee_id === query) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await adminFetch(
+          `/api/admin/leave-requests?resource=employees&search=${encodeURIComponent(query)}`,
+          { cache: "no-store" },
+        );
+        const data = await readJson<{ data: EmployeeOption[] }>(response);
+        setEmployees(data.data);
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Unable to search employees.",
+        );
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [employeeQuery, selectedEmployee]);
+
+  const filteredRecords = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return records
+      .filter((leave) => {
+        const matchesSearch =
+          !query ||
+          [
+            leave.employee_number,
+            leave.employee_name,
+            leave.employee_search_name,
+            leave.department,
+            leave.position,
+            leave.leave_type,
+            leave.other_leave_type || "",
+            leave.reason,
+          ].some((value) => (value || "").toLowerCase().includes(query));
+        const matchesDate =
+          (!fromFilter || leave.end_date >= fromFilter) &&
+          (!toFilter || leave.start_date <= toFilter);
+        return (
+          matchesSearch &&
+          (!employeeFilter ||
+            leave.employee_number
+              .toLowerCase()
+              .includes(employeeFilter.toLowerCase())) &&
+          (departmentFilter === "All" ||
+            leave.department === departmentFilter) &&
+          (typeFilter === "All" || leave.leave_type === typeFilter) &&
+          (statusFilter === "All" || leave.status === statusFilter) &&
+          matchesDate
+        );
+      })
+      .sort(
+        (a, b) =>
+          a.start_date.localeCompare(b.start_date) ||
+          a.employee_name.localeCompare(b.employee_name),
+      );
+  }, [
+    records,
+    search,
+    employeeFilter,
+    departmentFilter,
+    typeFilter,
+    statusFilter,
+    fromFilter,
+    toFilter,
+  ]);
+
+  const listRecords = useMemo(
+    () =>
+      [...filteredRecords].sort((a, b) => {
+        const compared =
+          sortBy === "type"
+            ? a.leave_type.localeCompare(b.leave_type) ||
+              (a.other_leave_type || "").localeCompare(
+                b.other_leave_type || "",
+              ) ||
+              a.start_date.localeCompare(b.start_date) ||
+              a.employee_name.localeCompare(b.employee_name)
+            : a.start_date.localeCompare(b.start_date) ||
+              a.employee_name.localeCompare(b.employee_name);
+        return sortAscending ? compared : -compared;
+      }),
+    [filteredRecords, sortAscending, sortBy],
+  );
+
+  const calendarRecords = useMemo(
+    () =>
+      filteredRecords.filter(
+        (leave) => leave.status === PENDING || isApproved(leave.status),
+      ),
+    [filteredRecords],
+  );
+  const departments = useMemo(
+    () => Array.from(new Set(records.map((leave) => leave.department))).sort(),
+    [records],
+  );
+  const pendingQueue = useMemo(
+    () => filteredRecords.filter((leave) => leave.status === PENDING),
+    [filteredRecords],
+  );
+
+  // Sidebar only: hide pending requests whose leave has already ended.
+  // Calendar/week views use calendarRecords, so past ones still show there.
+  const awaitingApproval = useMemo(() => {
+    const todayStr = dateValue(new Date());
+    return pendingQueue.filter((leave) => leave.end_date >= todayStr);
+  }, [pendingQueue]);
+
+  const today = new Date();
+  const todayValue = dateValue(today);
+  const weekAheadValue = dateValue(addDays(today, 7));
+  const stats = useMemo(
+    () => ({
+      onLeave: records.filter(
+        (l) =>
+          isApproved(l.status) &&
+          l.start_date <= todayValue &&
+          l.end_date >= todayValue,
+      ).length,
+      pending: records.filter((l) => l.status === PENDING).length,
+      upcoming: records.filter(
+        (l) =>
+          isApproved(l.status) &&
+          l.start_date > todayValue &&
+          l.start_date <= weekAheadValue,
+      ).length,
+    }),
+    [records, todayValue, weekAheadValue],
+  );
+
+  const activeFilterCount = [
+    employeeFilter,
+    departmentFilter !== "All",
+    typeFilter !== "All",
+    statusFilter !== "All",
+    fromFilter,
+    toFilter,
+  ].filter(Boolean).length;
+
+  const clearFilters = () => {
+    setSearch("");
+    setEmployeeFilter("");
+    setDepartmentFilter("All");
+    setTypeFilter("All");
+    setStatusFilter("All");
+    setFromFilter("");
+    setToFilter("");
+  };
+
+  const pages = Math.max(1, Math.ceil(listRecords.length / PAGE_SIZE));
+  const visibleRecords = listRecords.slice(
+    (page - 1) * PAGE_SIZE,
+    page * PAGE_SIZE,
+  );
+
+  const weeks = useMemo(() => {
+    const rangeStart = startOfWeek(startOfMonth(month), { weekStartsOn: 0 });
+    const rangeEnd = addDays(
+      startOfWeek(endOfMonth(month), { weekStartsOn: 0 }),
+      6,
+    );
+    const days: Date[] = [];
+    for (let d = rangeStart; d <= rangeEnd; d = addDays(d, 1)) days.push(d);
+    const result: ({ days: Date[] } & ReturnType<typeof layoutWeek>)[] = [];
+    for (let i = 0; i < days.length; i += 7) {
+      const weekDays = days.slice(i, i + 7);
+      result.push({ days: weekDays, ...layoutWeek(weekDays, calendarRecords) });
+    }
+    return result;
+  }, [month, calendarRecords]);
+
+  // Week view
+  const weekDays = useMemo(() => {
+    const start = startOfWeek(selectedDate, { weekStartsOn: 0 });
+    return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  }, [selectedDate]);
+  const weekLayout = useMemo(
+    () => layoutWeek(weekDays, calendarRecords, Infinity),
+    [weekDays, calendarRecords],
+  );
+
+  const goToday = () => {
+    setMonth(startOfMonth(today));
+    setSelectedDate(today);
+  };
+  const goPrev = () => {
+    if (view === "week") {
+      const d = addDays(selectedDate, -7);
+      setSelectedDate(d);
+      setMonth(startOfMonth(d));
+    } else setMonth((v) => subMonths(v, 1));
+  };
+  const goNext = () => {
+    if (view === "week") {
+      const d = addDays(selectedDate, 7);
+      setSelectedDate(d);
+      setMonth(startOfMonth(d));
+    } else setMonth((v) => addMonths(v, 1));
+  };
+
+  const selectedDayValue = dateValue(selectedDate);
+  const selectedDayRecords = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return records.filter((leave) => {
+      const matchesSearch =
+        !query ||
+        [
+          leave.employee_number,
+          leave.employee_name,
+          leave.employee_search_name,
+          leave.department,
+          leave.position,
+          leave.leave_type,
+          leave.other_leave_type || "",
+          leave.reason,
+        ].some((value) => (value || "").toLowerCase().includes(query));
+      const matchesDate =
+        (!fromFilter || leave.end_date >= fromFilter) &&
+        (!toFilter || leave.start_date <= toFilter);
+
+      return (
+        (leave.status === PENDING || isApproved(leave.status)) &&
+        matchesSearch &&
+        (!employeeFilter ||
+          leave.employee_number
+            .toLowerCase()
+            .includes(employeeFilter.toLowerCase())) &&
+        (departmentFilter === "All" || leave.department === departmentFilter) &&
+        (typeFilter === "All" || leave.leave_type === typeFilter) &&
+        matchesDate &&
+        leave.start_date <= selectedDayValue &&
+        leave.end_date >= selectedDayValue
+      );
+    });
+  }, [
+    records,
+    search,
+    employeeFilter,
+    departmentFilter,
+    typeFilter,
+    fromFilter,
+    toFilter,
+    selectedDayValue,
+  ]);
+  const dayPopupRecords = useMemo(() => {
+    if (!dayPopup) return [];
+    const value = dateValue(dayPopup);
+    return calendarRecords.filter(
+      (leave) => leave.start_date <= value && leave.end_date >= value,
+    );
+  }, [dayPopup, calendarRecords]);
+  const loadApprovers = useCallback(async (employeeId: string) => {
+    if (!employeeId) {
+      setApprovers([]);
+      return;
+    }
+    try {
+      const response = await adminFetch(
+        `/api/admin/leave-requests?resource=approvers&employee_id=${employeeId}`,
+        { cache: "no-store" },
+      );
+      const data = await readJson<{ data: ApproverOption[] }>(response);
+      setApprovers(data.data);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to load eligible approvers.",
+      );
+    }
+  }, []);
+  // Kunin ang leave credits ng employee sa taon ng leave
+  useEffect(() => {
+    if (!selectedRecord) {
+      setCreditInfo(null);
+      return;
+    }
+    let active = true;
+    setCreditLoading(true);
+    const year = selectedRecord.start_date.slice(0, 4);
+
+    void (async () => {
+      try {
+        const data = await readJson<{
+          data: {
+            id: number;
+            eligible: boolean;
+            remaining: number;
+            eligible_on: string;
+          }[];
+        }>(
+          await adminFetch(`/api/admin/leave-credits?year=${year}`, {
+            cache: "no-store",
+          }),
+        );
+        const row = data.data.find((r) => r.id === selectedRecord.employee_id);
+        if (active)
+          setCreditInfo(
+            row
+              ? {
+                  eligible: row.eligible,
+                  remaining: row.remaining,
+                  eligible_on: row.eligible_on,
+                }
+              : null, // wala sa listahan = hindi regular / hindi eligible
+          );
+      } catch {
+        if (active) setCreditInfo(null);
+      } finally {
+        if (active) setCreditLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [selectedRecord]);
+  useEffect(() => {
+    if (!selectedRecord) {
+      setApprovers([]);
+      return;
+    }
+    setDetailApprover(
+      selectedRecord.approved_by ? String(selectedRecord.approved_by) : "",
+    );
+    void loadApprovers(String(selectedRecord.employee_id));
+  }, [selectedRecord, loadApprovers]);
+
+  useEffect(() => {
+    if (!employeeQuery) return;
+    const employee = employees.find(
+      (option) => option.employee_id === employeeQuery,
+    );
+    if (!employee || selectedEmployee?.id === employee.id) return;
+    setSelectedEmployee(employee);
+    setForm((previous) => ({
+      ...previous,
+      employee_id: String(employee.id),
+      employee_number: employee.employee_id,
+      approved_by: "",
+    }));
+    setApprovers([]);
+    void loadApprovers(String(employee.id));
+  }, [employeeQuery, employees, selectedEmployee, loadApprovers]);
+
+  const selectEmployee = (employeeNumber: string) => {
+    const employee = employees.find(
+      (option) => option.employee_id === employeeNumber,
+    );
+    setEmployeeQuery(employeeNumber);
+    setSelectedEmployee(employee || null);
+    setForm((previous) => ({
+      ...previous,
+      employee_id: employee ? String(employee.id) : "",
+      employee_number: employee?.employee_id || employeeNumber,
+    }));
+  };
+  // The picker lists ACTIVE employees only (new leaves can't be filed for
+  // inactive ones). Existing leaves of inactive employees still display.
+  const loadEmployees = useCallback(async () => {
+    try {
+      const response = await adminFetch(
+        "/api/admin/leave-requests?resource=employees",
+        { cache: "no-store" },
+      );
+      const data = await readJson<{ data: EmployeeOption[] }>(response);
+      setEmployees(data.data);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to load employees.",
+      );
+    }
+  }, []);
+  const openCreate = () => {
+    setEditing(null);
+    setForm(EMPTY_FORM);
+    setSelectedEmployee(null);
+    setEmployeeQuery("");
+    setApprovers([]);
+    setFormOpen(true);
+    void loadEmployees();
+  };
+
+  const openEdit = async (leave: LeaveRecord) => {
+    setSelectedRecord(null);
+    setEditing(leave);
+    setForm({
+      employee_id: String(leave.employee_id),
+      employee_number: leave.employee_number,
+      leave_type: leave.leave_type,
+      other_leave_type: leave.other_leave_type || "",
+      start_date: leave.start_date,
+      end_date: leave.end_date,
+      half_day_period: leave.half_day_period || "",
+      early_leave_time: leave.early_leave_time || "",
+      reason: leave.reason,
+      approved_by: leave.approved_by ? String(leave.approved_by) : "",
+      proof: null,
+    });
+    setEmployeeQuery(leave.employee_number);
+    let employee = employees.find((option) => option.id === leave.employee_id);
+    if (!employee) {
+      try {
+        const response = await adminFetch(
+          `/api/admin/leave-requests?resource=employees&search=${encodeURIComponent(leave.employee_number)}`,
+        );
+        const data = await readJson<{ data: EmployeeOption[] }>(response);
+        employee = data.data.find((option) => option.id === leave.employee_id);
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Unable to load the employee.",
+        );
+      }
+    }
+    // The picker only finds active employees. For an inactive employee, build
+    // the option from the leave record so the form can still be saved.
+    setSelectedEmployee(
+      employee || {
+        id: leave.employee_id,
+        employee_id: leave.employee_number,
+        name: leave.employee_name,
+        position: leave.position,
+        department: leave.department,
+      },
+    );
+    await loadApprovers(String(leave.employee_id));
+    setFormOpen(true);
+  };
+
+  const submitForm = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedEmployee || !form.employee_id) {
+      toast.error("Select an employee from the masterfile.");
+      return;
+    }
+    if (
+      !form.leave_type ||
+      (form.leave_type === PERSONAL_LEAVE && !form.other_leave_type.trim()) ||
+      !form.start_date ||
+      !form.end_date ||
+      !form.reason.trim()
+    ) {
+      toast.error("Complete all required leave fields.");
+      return;
+    }
+    if (form.start_date > form.end_date) {
+      toast.error("End date cannot be before start date.");
+      return;
+    }
+    if (form.half_day_period && form.start_date !== form.end_date) {
+      toast.error("Half-day leave must be requested for a single date.");
+      return;
+    }
+    if (form.leave_type === EARLY_LEAVE) {
+      if (!form.early_leave_time) {
+        toast.error("Enter the time of departure.");
+        return;
+      }
+      if (form.start_date !== form.end_date) {
+        toast.error("Early leave must be requested for a single date.");
+        return;
+      }
+      if (form.half_day_period) {
+        toast.error("Early leave cannot be combined with half-day leave.");
+        return;
+      }
+    }
+    const body = new FormData();
+    body.set("employee_id", form.employee_id);
+    body.set("leave_type", form.leave_type);
+    body.set(
+      "other_leave_type",
+      form.leave_type === PERSONAL_LEAVE ? form.other_leave_type.trim() : "",
+    );
+    body.set("start_date", form.start_date);
+    body.set("end_date", form.end_date);
+    body.set("half_day_period", form.half_day_period);
+    body.set(
+      "early_leave_time",
+      form.leave_type === EARLY_LEAVE ? form.early_leave_time : "",
+    );
+    body.set("reason", form.reason.trim());
+    body.set("approved_by", form.approved_by);
+    if (form.proof) body.set("proof", form.proof);
+    setSaving(true);
+    try {
+      const response = await adminFetch(
+        editing
+          ? `/api/admin/leave-requests/${editing.id}`
+          : "/api/admin/leave-requests",
+        { method: editing ? "PUT" : "POST", body },
+      );
+      await readJson(response);
+      toast.success(
+        editing ? "Leave request updated." : "Leave request created.",
+      );
+      setFormOpen(false);
+      setSelectedRecord(null);
+      await loadData();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to save leave request.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateStatus = async (leave: LeaveRecord, status: LeaveStatus) => {
+    try {
+      const response = await adminFetch(
+        `/api/admin/leave-requests/${leave.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            isApproved(status) && detailApprover
+              ? { status, approved_by: Number(detailApprover) }
+              : { status },
+          ),
+        },
+      );
+      await readJson(response);
+      toast.success(`Leave marked: ${status}.`);
+      setSelectedRecord(null);
+      await loadData();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to update leave status.",
+      );
+    }
+  };
+
+  const saveApprover = async (leave: LeaveRecord) => {
+    setSavingApprover(true);
+    try {
+      await readJson(
+        await adminFetch(`/api/admin/leave-requests/${leave.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            approved_by: detailApprover ? Number(detailApprover) : null,
+          }),
+        }),
+      );
+      toast.success("Approver updated.");
+      setSelectedRecord(null);
+      await loadData();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to update approver.",
+      );
+    } finally {
+      setSavingApprover(false);
+    }
+  };
+
+  const deleteRecord = async (leave: LeaveRecord) => {
+    if (
+      !window.confirm(
+        `Delete the leave record for ${leave.employee_name}? This cannot be undone.`,
+      )
+    )
+      return;
+    try {
+      await readJson(
+        await adminFetch(`/api/admin/leave-requests/${leave.id}`, {
+          method: "DELETE",
+        }),
+      );
+      toast.success("Leave record deleted.");
+      setSelectedRecord(null);
+      await loadData();
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to delete leave record.",
+      );
+    }
+  };
+
+  const dayCount = form.half_day_period
+    ? 0.5
+    : form.start_date && form.end_date && form.start_date <= form.end_date
+      ? differenceInCalendarDays(
+          parseDay(form.end_date),
+          parseDay(form.start_date),
+        ) + 1
+      : 0;
+
+  const downloadProof = async (leave: LeaveRecord) => {
+    try {
+      const response = await adminFetch(
+        `/api/admin/leave-requests/${leave.id}/attachment`,
+      );
+      if (!response.ok)
+        throw new Error("Unable to download the proof attachment.");
+      const blobUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      const disposition = response.headers.get("content-disposition") || "";
+      const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+      link.download =
+        filename || `leave-proof-${leave.employee_number}-${leave.id}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to download attachment.",
+      );
+    }
+  };
+
+  const viewProof = async (leave: LeaveRecord) => {
+    // Open the tab synchronously so popup blockers allow it,
+    // then point it at the file once it has loaded.
+    const tab = window.open("", "_blank");
+    try {
+      const response = await adminFetch(
+        `/api/admin/leave-requests/${leave.id}/attachment`,
+      );
+      if (!response.ok) throw new Error("Unable to load the proof attachment.");
+
+      const disposition = response.headers.get("content-disposition") || "";
+      const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || "";
+      const ext = filename.split(".").pop()?.toLowerCase();
+      const fallbackType =
+        ext === "pdf"
+          ? "application/pdf"
+          : ext === "png"
+            ? "image/png"
+            : ext === "jpg" || ext === "jpeg"
+              ? "image/jpeg"
+              : "";
+
+      // If the server sent a generic type, fall back to the file extension
+      // so the browser previews the file instead of downloading it.
+      const raw = await response.blob();
+      const blob =
+        raw.type && raw.type !== "application/octet-stream"
+          ? raw
+          : new Blob([raw], { type: fallbackType || raw.type });
+
+      const blobUrl = URL.createObjectURL(blob);
+      if (tab) tab.location.href = blobUrl;
+      else window.open(blobUrl, "_blank");
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch (error) {
+      tab?.close();
+      toast.error(
+        error instanceof Error ? error.message : "Unable to view attachment.",
+      );
+    }
+  };
+
+  const addLeaveType = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = newLeaveType.trim();
+    if (!name) return;
+    setSavingType(true);
+    try {
+      await readJson(
+        await adminFetch("/api/admin/leave-types", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        }),
+      );
+      setLeaveTypes((current) =>
+        [...current, name].sort((a, b) => a.localeCompare(b)),
+      );
+      setForm((current) => ({ ...current, leave_type: name }));
+      setNewLeaveType("");
+      setTypeDialogOpen(false);
+      toast.success("Leave type added.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to add leave type.",
+      );
+    } finally {
+      setSavingType(false);
+    }
+  };
+
+  const viewPendingList = () => {
+    setStatusFilter(PENDING);
+    setView("list");
+  };
+
+  return (
+    <section className="mx-auto max-w-[1600px] space-y-5 p-1 sm:p-2">
+      <header className="overflow-hidden rounded-2xl bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg">
+        <div className="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-7">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/20 sm:h-12 sm:w-12">
+                <CalendarRange className="h-6 w-6 text-white sm:h-7 sm:w-7" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+                  Leave monitoring
+                </h1>
+                <p className="mt-1 text-sm text-blue-100">
+                  See who is away and review requests that need a decision.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+              <span className="text-blue-100">
+                Showing{" "}
+                <span className="font-semibold text-white">
+                  {filteredRecords.length}
+                </span>{" "}
+                matching {filteredRecords.length === 1 ? "request" : "requests"}
+              </span>
+              <span className="hidden h-4 w-px bg-white/30 sm:block" />
+              <span className="inline-flex items-center gap-2 text-blue-100">
+                <span className="h-2 w-2 rounded-full bg-amber-300" />
+                <span>
+                  <span className="font-semibold text-white">
+                    {stats.pending}
+                  </span>{" "}
+                  pending
+                </span>
+              </span>
+              <span className="inline-flex items-center gap-2 text-blue-100">
+                <span className="h-2 w-2 rounded-full bg-emerald-300" />
+                <span>
+                  <span className="font-semibold text-white">
+                    {stats.onLeave}
+                  </span>{" "}
+                  on leave today
+                </span>
+              </span>
+              <span className="inline-flex items-center gap-2 text-blue-100">
+                <span className="h-2 w-2 rounded-full bg-cyan-200" />
+                <span>
+                  <span className="font-semibold text-white">
+                    {stats.upcoming}
+                  </span>{" "}
+                  upcoming this week
+                </span>
+              </span>
+            </div>
+          </div>
+          <Button
+            className="h-11 shrink-0 bg-white px-5 font-semibold text-blue-700 shadow-md transition-colors hover:bg-blue-50"
+            onClick={openCreate}
+          >
+            <Plus className="mr-2 h-4 w-4" />
+            Add leave
+          </Button>
+        </div>
+      </header>
+
+      {/* Toolbar */}
+      <Card className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="space-y-3 border-b border-slate-100 p-4 sm:p-5">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center">
+            <div
+              role="tablist"
+              aria-label="Leave view"
+              className="inline-flex shrink-0 self-start rounded-lg bg-slate-50 p-1"
+              style={{ display: "inline-flex", gap: 4 }}
+            >
+              {(
+                [
+                  ["calendar", "Month", CalendarDays],
+                  ["week", "Week", CalendarRange],
+                  ["list", "List", List],
+                ] as const
+              ).map(([key, label, Icon]) => (
+                <button
+                  key={key}
+                  role="tab"
+                  aria-selected={view === key}
+                  onClick={() => setView(key)}
+                  style={TAB_STYLE}
+                  className={`rounded-md px-3.5 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-600 ${view === key ? "bg-white text-cyan-800 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
+                >
+                  <Icon className="h-4 w-4" /> {label}
+                </button>
+              ))}
+            </div>
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search by name, ID, department, type or reason"
+                aria-label="Search leave records"
+                className="pl-9"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setFiltersOpen((open) => !open)}
+                aria-expanded={filtersOpen}
+                aria-controls="leave-filters"
+              >
+                <SlidersHorizontal className="h-4 w-4" /> Filters
+                {activeFilterCount > 0 && (
+                  <span className="ml-1 rounded-full bg-cyan-700 px-1.5 text-xs font-semibold text-white">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </Button>
+              {(activeFilterCount > 0 || search) && (
+                <Button variant="ghost" onClick={clearFilters}>
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {filtersOpen && (
+            <div
+              id="leave-filters"
+              className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6"
+            >
+              <Field label="Employee ID">
+                <Input
+                  value={employeeFilter}
+                  onChange={(event) => setEmployeeFilter(event.target.value)}
+                  placeholder="e.g. 2024-0012"
+                />
+              </Field>
+              <Field label="Department">
+                <select
+                  value={departmentFilter}
+                  onChange={(event) => setDepartmentFilter(event.target.value)}
+                  className={selectClass}
+                >
+                  <option value="All">All departments</option>
+                  {departments.map((department) => (
+                    <option key={department}>{department}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Leave type">
+                <select
+                  value={typeFilter}
+                  onChange={(event) => setTypeFilter(event.target.value)}
+                  className={selectClass}
+                >
+                  <option value="All">All leave types</option>
+                  {leaveTypes.map((type) => (
+                    <option key={type}>{type}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Status">
+                <select
+                  value={statusFilter}
+                  onChange={(event) => setStatusFilter(event.target.value)}
+                  className={selectClass}
+                >
+                  <option value="All">All statuses</option>
+                  {STATUSES.map((status) => (
+                    <option key={status}>{status}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="From">
+                <Input
+                  type="date"
+                  value={fromFilter}
+                  onChange={(event) => setFromFilter(event.target.value)}
+                />
+              </Field>
+              <Field label="To">
+                <Input
+                  type="date"
+                  value={toFilter}
+                  min={fromFilter || undefined}
+                  onChange={(event) => setToFilter(event.target.value)}
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        <div
+          className={`grid items-start gap-6 ${view === "list" ? "" : "xl:grid-cols-[minmax(0,1fr)_340px]"}`}
+        >
+          {view === "week" ? (
+            /* ───────── WEEK PANEL ───────── */
+            <div className="min-w-0 overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                <h2 className="text-lg font-semibold text-slate-900">
+                  {format(weekDays[0], "MMM d")} –{" "}
+                  {format(weekDays[6], "MMM d, yyyy")}
+                </h2>
+                <div className="flex items-center gap-1.5">
+                  <Button variant="outline" size="sm" onClick={goToday}>
+                    Today
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Previous week"
+                    onClick={goPrev}
+                  >
+                    <ChevronLeft />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Next week"
+                    onClick={goNext}
+                  >
+                    <ChevronRight />
+                  </Button>
+                </div>
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <div style={{ minWidth: 640 }}>
+                  {/* Day headers */}
+                  <div
+                    style={GRID_7}
+                    className="border-b border-slate-200 bg-slate-50/70"
+                  >
+                    {weekDays.map((day) => {
+                      const isToday = isSameDay(day, today);
+                      const isSelected = isSameDay(day, selectedDate);
+                      return (
+                        <button
+                          key={dateValue(day)}
+                          onClick={() => setSelectedDate(day)}
+                          aria-pressed={isSelected}
+                          style={{ minWidth: 0 }}
+                          className={`py-2 text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-600 ${isSelected ? "bg-cyan-50/70" : ""}`}
+                        >
+                          <span className="block text-xs font-medium text-slate-500">
+                            {format(day, "EEE")}
+                          </span>
+                          <span
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: 28,
+                              height: 28,
+                              margin: "2px auto 0",
+                            }}
+                            className={`rounded-full text-sm tabular-nums ${isToday ? "bg-cyan-700 font-semibold text-white" : "text-slate-800"}`}
+                          >
+                            {format(day, "d")}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Body: column backgrounds + spanning bars */}
+                  <div style={{ position: "relative" }}>
+                    <div
+                      style={{
+                        ...GRID_7,
+                        minHeight: Math.max(
+                          200,
+                          16 + weekLayout.rows * 26 + 16,
+                        ),
+                      }}
+                    >
+                      {weekDays.map((day) => (
+                        <div
+                          key={dateValue(day)}
+                          style={{ minWidth: 0 }}
+                          className={`border-r border-slate-100 last:border-r-0 ${isSameDay(day, selectedDate) ? "bg-cyan-50/70" : ""}`}
+                        />
+                      ))}
+                    </div>
+
+                    <div
+                      style={{
+                        ...GRID_7,
+                        position: "absolute",
+                        left: 0,
+                        right: 0,
+                        top: 8,
+                        gridAutoRows: "22px",
+                        rowGap: 4,
+                        alignContent: "start",
+                        pointerEvents: "none",
+                      }}
+                    >
+                      {weekLayout.segments.map((seg) => (
+                        <button
+                          key={`${seg.leave.id}-${seg.startCol}`}
+                          onClick={() => setSelectedRecord(seg.leave)}
+                          title={`${seg.leave.employee_number}, ${seg.leave.employee_name}, ${leaveTypeLabel(seg.leave)} (${leaveDurationLabel(seg.leave)}; ${seg.leave.status})`}
+                          style={{
+                            gridColumn: `${seg.startCol + 1} / ${seg.endCol + 2}`,
+                            gridRow: seg.lane + 1,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            minWidth: 0,
+                            pointerEvents: "auto",
+                            marginLeft: seg.clipStart ? 0 : 4,
+                            marginRight: seg.clipEnd ? 0 : 4,
+                          }}
+                          className={`px-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-600 ${barStyle(seg.leave.status)} ${seg.clipStart ? "rounded-l-none" : "rounded-l"} ${seg.clipEnd ? "rounded-r-none" : "rounded-r"} ${!seg.clipStart && isApproved(seg.leave.status) ? "border-l-[3px] border-emerald-600" : ""}`}
+                        >
+                          <span
+                            className="font-medium"
+                            style={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {seg.leave.employee_name}
+                          </span>
+                          <span
+                            className="opacity-70"
+                            style={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {leaveTypeLabel(seg.leave)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {loading && (
+                <div className="flex items-center justify-center gap-2 border-t border-slate-100 p-6 text-sm text-slate-500">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading leave
+                  records
+                </div>
+              )}
+              {!loading && weekLayout.segments.length === 0 && (
+                <p className="border-t border-slate-100 p-6 text-center text-sm text-slate-500">
+                  No approved or pending leave this week.
+                </p>
+              )}
+            </div>
+          ) : view === "calendar" ? (
+            <div className="min-w-0 overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <h2 className="text-lg font-semibold text-slate-900">
+                    {format(month, "MMMM yyyy")}
+                  </h2>
+                  <div className="hidden items-center gap-3 text-xs text-slate-500 sm:flex">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                      Approved (Leave Credits)
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-sky-500" />
+                      Approved leave without pay
+                    </span>
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-full bg-amber-500" />
+                      Pending review
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Button variant="outline" size="sm" onClick={goToday}>
+                    Today
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Previous month"
+                    onClick={() => setMonth((value) => subMonths(value, 1))}
+                  >
+                    <ChevronLeft />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Next month"
+                    onClick={() => setMonth((value) => addMonths(value, 1))}
+                  >
+                    <ChevronRight />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <div className="min-w-[640px]">
+                  <div
+                    style={GRID_7}
+                    className="border-b border-slate-200 bg-slate-50/70"
+                  >
+                    {WEEKDAYS.map((day) => (
+                      <div
+                        key={day}
+                        className="py-2 text-center text-xs font-medium text-slate-500"
+                      >
+                        {day}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="divide-y divide-slate-200">
+                    {weeks.map(
+                      ({ days, segments, overflow, rows }, weekIndex) => (
+                        <div
+                          key={weekIndex}
+                          className="relative"
+                          style={{
+                            minHeight: Math.max(128, 48 + rows * 26 + 8),
+                          }}
+                        >
+                          <div
+                            style={{
+                              ...GRID_7,
+                              minHeight: Math.max(128, 48 + rows * 26 + 8),
+                            }}
+                          >
+                            {days.map((day) => {
+                              const inMonth = isSameMonth(day, month);
+                              const isToday = isSameDay(day, today);
+                              const isSelected = isSameDay(day, selectedDate);
+                              return (
+                                <div
+                                  key={dateValue(day)}
+                                  className={`border-r border-slate-100 p-1.5 last:border-r-0 sm:p-2 ${!inMonth ? "bg-slate-50/70" : ""} ${isSelected ? "bg-cyan-50/60" : ""}`}
+                                >
+                                  <button
+                                    onClick={() => setSelectedDate(day)}
+                                    aria-label={`View leaves for ${format(day, "MMMM d, yyyy")}`}
+                                    aria-pressed={isSelected}
+                                    className={`mb-1 flex h-7 w-7 items-center justify-center rounded-full text-sm tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-600 ${isToday ? "bg-cyan-700 font-semibold text-white" : inMonth ? "text-slate-800 hover:bg-slate-50" : "text-slate-400"} ${isSelected && !isToday ? "ring-2 ring-cyan-600" : ""}`}
+                                  >
+                                    {format(day, "d")}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div
+                            style={{
+                              ...GRID_7,
+                              position: "absolute",
+                              top: 40,
+                              left: 0,
+                              right: 0,
+                              gridAutoRows: "22px",
+                              rowGap: 4,
+                              alignContent: "start",
+                              pointerEvents: "none",
+                            }}
+                          >
+                            {segments
+                              .filter((segment) => segment.lane < MAX_LANES)
+                              .map((segment) => (
+                                <button
+                                  key={`${segment.leave.id}-${segment.startCol}`}
+                                  onClick={() =>
+                                    setSelectedRecord(segment.leave)
+                                  }
+                                  aria-label={`${segment.leave.employee_number}, ${segment.leave.employee_name}, ${leaveTypeLabel(segment.leave)}, ${leaveDurationLabel(segment.leave)}, ${segment.leave.status}`}
+                                  title={`${segment.leave.employee_number}, ${segment.leave.employee_name}, ${leaveTypeLabel(segment.leave)} (${leaveDurationLabel(segment.leave)}; ${segment.leave.status})`}
+                                  style={{
+                                    gridColumn: `${segment.startCol + 1} / ${segment.endCol + 2}`,
+                                    gridRow: segment.lane + 1,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    minWidth: 0,
+                                    pointerEvents: "auto",
+                                    marginLeft: segment.clipStart ? 0 : 4,
+                                    marginRight: segment.clipEnd ? 0 : 4,
+                                  }}
+                                  className={`px-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-600 ${barStyle(segment.leave.status)} ${segment.clipStart ? "rounded-l-none" : "rounded-l"} ${segment.clipEnd ? "rounded-r-none" : "rounded-r"} ${!segment.clipStart && isApproved(segment.leave.status) ? "border-l-[3px] border-emerald-600" : ""}`}
+                                >
+                                  {!segment.clipStart && (
+                                    <>
+                                      <span className="truncate font-medium">
+                                        {segment.leave.employee_name}
+                                      </span>
+                                      <span className="truncate opacity-70">
+                                        {leaveTypeLabel(segment.leave)}
+                                      </span>
+                                    </>
+                                  )}
+                                </button>
+                              ))}
+                            {overflow.map((count, dayIndex) =>
+                              count > 0 ? (
+                                <button
+                                  key={`overflow-${weekIndex}-${dayIndex}`}
+                                  onClick={() => {
+                                    setSelectedDate(days[dayIndex]);
+                                    setDayPopup(days[dayIndex]);
+                                  }}
+                                  style={{
+                                    gridColumn: dayIndex + 1,
+                                    gridRow: MAX_LANES + 1,
+                                    minWidth: 0,
+                                    pointerEvents: "auto",
+                                  }}
+                                  className="truncate px-1 text-left text-xs font-medium text-cyan-700 hover:underline"
+                                >
+                                  +{count} more
+                                </button>
+                              ) : null,
+                            )}
+                          </div>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                </div>
+              </div>
+              {loading && (
+                <div className="flex items-center justify-center gap-2 border-t border-slate-100 p-6 text-sm text-slate-500">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading leave
+                  records
+                </div>
+              )}
+              {!loading && calendarRecords.length === 0 && (
+                <p className="border-t border-slate-100 p-6 text-center text-sm text-slate-500">
+                  No approved or pending leave matches these filters.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="min-w-0 overflow-hidden">
+              <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                <h2 className="font-semibold text-slate-900">
+                  Leave records{" "}
+                  <span className="font-normal text-slate-500">
+                    ({filteredRecords.length})
+                  </span>
+                </h2>
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label="Sort leave records by"
+                    value={sortBy}
+                    onChange={(event) =>
+                      setSortBy(event.target.value === "type" ? "type" : "date")
+                    }
+                    className="h-8 rounded-md border border-input bg-white px-2 text-sm"
+                  >
+                    <option value="date">Start date</option>
+                    <option value="type">Leave type</option>
+                  </select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSortAscending((current) => !current)}
+                  >
+                    {sortBy === "date"
+                      ? `Start date: ${sortAscending ? "earliest first" : "latest first"}`
+                      : `Leave type: ${sortAscending ? "A–Z" : "Z–A"}`}
+                  </Button>
+                </div>
+              </div>
+
+              {loading ? (
+                <div className="flex items-center justify-center gap-2 p-12 text-sm text-slate-500">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading leave
+                  records
+                </div>
+              ) : visibleRecords.length === 0 ? (
+                <div className="px-4 py-14 text-center">
+                  <p className="font-medium text-slate-900">
+                    No leave records match
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Try a different search or clear your filters.
+                  </p>
+                  {(activeFilterCount > 0 || search) && (
+                    <Button
+                      variant="outline"
+                      className="mt-4"
+                      onClick={clearFilters}
+                    >
+                      Clear filters
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {/* Desktop table */}
+                  <div className="hidden md:block">
+                    <table className="w-full table-fixed text-left text-sm">
+                      <thead className="border-b border-slate-200 bg-slate-50/70 text-xs text-slate-500">
+                        <tr>
+                          <th className="w-[24%] px-4 py-2.5 font-medium">
+                            Employee
+                          </th>
+                          <th className="w-[19%] px-3 py-2.5 font-medium">
+                            Leave
+                          </th>
+                          <th className="w-[19%] px-3 py-2.5 font-medium">
+                            Dates
+                          </th>
+                          <th className="hidden w-[13%] px-3 py-2.5 font-medium xl:table-cell">
+                            Approver
+                          </th>
+                          <th className="w-[17%] px-3 py-2.5 font-medium">
+                            Status
+                          </th>
+                          <th className="w-[96px] px-4 py-2.5 text-right font-medium">
+                            <span className="sr-only">Actions</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {visibleRecords.map((leave) => (
+                          <tr
+                            key={leave.id}
+                            className="align-middle text-slate-700 hover:bg-slate-50/60"
+                          >
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-3">
+                                <Avatar name={leave.employee_name} size="sm" />
+                                <div className="min-w-0">
+                                  <p className="truncate font-medium text-slate-900">
+                                    {leave.employee_name}
+                                  </p>
+                                  <p className="truncate text-xs text-slate-500">
+                                    {leave.employee_number}, {leave.department}
+                                    {isInactive(leave) && (
+                                      <span className="ml-1 font-medium text-slate-400">
+                                        · Inactive
+                                      </span>
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-3 py-3">
+                              <p className="truncate font-medium">
+                                {leaveTypeLabel(leave)}
+                              </p>
+                              <p
+                                className="truncate text-xs text-slate-500"
+                                title={leave.reason}
+                              >
+                                {leave.reason}
+                              </p>
+                            </td>
+                            <td className="px-3 py-3">
+                              <p className="truncate">
+                                {formatRange(leave.start_date, leave.end_date)}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {leaveDurationLabel(leave)}
+                              </p>
+                            </td>
+                            <td className="hidden truncate px-3 py-3 xl:table-cell">
+                              {leave.approver_name || (
+                                <span className="text-slate-400">
+                                  Not assigned
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-3">
+                              <StatusBadge status={leave.status} />
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center justify-end gap-1">
+                                {leave.has_proof && (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label={`Download proof for ${leave.employee_name}`}
+                                    title="Download proof"
+                                    onClick={() => void downloadProof(leave)}
+                                  >
+                                    <Paperclip className="h-4 w-4" />
+                                  </Button>
+                                )}
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => setSelectedRecord(leave)}
+                                >
+                                  Details
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Mobile cards */}
+                  <ul className="divide-y divide-slate-100 md:hidden">
+                    {visibleRecords.map((leave) => (
+                      <li key={leave.id}>
+                        <button
+                          onClick={() => setSelectedRecord(leave)}
+                          className="flex w-full items-start gap-3 p-4 text-left hover:bg-slate-50"
+                        >
+                          <Avatar name={leave.employee_name} />
+                          <span className="min-w-0 flex-1 space-y-0.5">
+                            <span className="flex items-start justify-between gap-2">
+                              <span className="truncate font-medium text-slate-900">
+                                {leave.employee_name}
+                              </span>
+                              <StatusBadge status={leave.status} />
+                            </span>
+                            <span className="block text-xs text-slate-500">
+                              {leave.employee_number}, {leave.department}
+                              {isInactive(leave) && " · Inactive"}
+                            </span>
+                            <span className="block pt-1 text-sm">
+                              {leaveTypeLabel(leave)}
+                            </span>
+                            <span className="block text-xs text-slate-500">
+                              {formatRange(leave.start_date, leave.end_date)} (
+                              {leaveDurationLabel(leave)})
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-sm">
+                    <span className="text-slate-500">
+                      Showing {(page - 1) * PAGE_SIZE + 1}–
+                      {Math.min(page * PAGE_SIZE, filteredRecords.length)} of{" "}
+                      {filteredRecords.length}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500">
+                        Page {page} of {pages}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={page <= 1}
+                        onClick={() => setPage((current) => current - 1)}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={page >= pages}
+                        onClick={() => setPage((current) => current + 1)}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {view !== "list" && (
+            <aside className="space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <h2 className="font-semibold text-slate-900">
+                  {isSameDay(selectedDate, today)
+                    ? "Today"
+                    : format(selectedDate, "EEEE, MMM d")}
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {selectedDayRecords.length === 0
+                    ? "No leave on this day."
+                    : `${selectedDayRecords.length} on leave`}
+                </p>
+                {selectedDayRecords.length > 0 && (
+                  <div className="mt-3 divide-y divide-slate-100">
+                    {selectedDayRecords.map((leave) => (
+                      <LeaveRow
+                        key={leave.id}
+                        leave={leave}
+                        onOpen={setSelectedRecord}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-semibold text-slate-900">
+                    Awaiting approval
+                  </h2>
+                  {awaitingApproval.length > 0 && (
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                      {awaitingApproval.length}
+                    </span>
+                  )}
+                </div>
+                {awaitingApproval.length === 0 ? (
+                  <p className="mt-2 text-sm text-slate-500">
+                    No requests need a decision.
+                  </p>
+                ) : (
+                  <ul className="mt-3 space-y-2">
+                    {awaitingApproval.slice(0, 5).map((leave) => (
+                      <li key={leave.id}>
+                        <button
+                          onClick={() => setSelectedRecord(leave)}
+                          className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-50"
+                        >
+                          <Avatar name={leave.employee_name} size="sm" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-slate-900">
+                              {leave.employee_name}
+                            </span>
+                            <span className="block truncate text-xs text-slate-500">
+                              {leaveTypeLabel(leave)},{" "}
+                              {formatRange(leave.start_date, leave.end_date)}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {awaitingApproval.length > 5 && (
+                  <button
+                    onClick={viewPendingList}
+                    className="mt-3 text-sm font-medium text-cyan-700 hover:underline"
+                  >
+                    See all {awaitingApproval.length} pending requests
+                  </button>
+                )}
+              </div>
+            </aside>
+          )}
+        </div>
+      </Card>
+      {/* Day popup ("+N more") */}
+      <Dialog
+        open={!!dayPopup}
+        onOpenChange={(open) => !open && setDayPopup(null)}
+      >
+        <DialogContent className="max-h-[80vh] max-w-md overflow-y-auto overflow-x-hidden">
+          <DialogHeader>
+            <DialogTitle>
+              {dayPopup ? format(dayPopup, "EEEE, MMM d, yyyy") : ""}
+            </DialogTitle>
+            <DialogDescription>
+              {dayPopupRecords.length} on leave
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-w-0 divide-y divide-slate-100">
+            {dayPopupRecords.map((leave) => (
+              <LeaveRow
+                key={leave.id}
+                leave={leave}
+                onOpen={(record) => {
+                  setDayPopup(null);
+                  setSelectedRecord(record);
+                }}
+              />
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* Add / edit leave */}
+      <Dialog open={formOpen} onOpenChange={setFormOpen}>
+        <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col gap-0 p-0">
+          <DialogHeader className="border-b border-slate-200 px-6 py-4">
+            <DialogTitle>{editing ? "Edit leave" : "Add leave"}</DialogTitle>
+            <DialogDescription>
+              Pick an active employee from the masterfile. Their details fill in
+              automatically.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={submitForm} className="flex min-h-0 flex-1 flex-col">
+            <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
+              <section className="space-y-3">
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Employee
+                </h3>
+                <Field label="Employee ID">
+                  <Input
+                    list="masterfile-employees"
+                    value={employeeQuery}
+                    onChange={(event) => selectEmployee(event.target.value)}
+                    placeholder="Search or select an Employee ID"
+                    required
+                  />
+                  <datalist id="masterfile-employees">
+                    {employees.map((employee) => (
+                      <option key={employee.id} value={employee.employee_id}>
+                        {employee.name}, {employee.department}
+                        {employee.status &&
+                        employee.status.toLowerCase() !== "active"
+                          ? " (Inactive)"
+                          : ""}
+                      </option>
+                    ))}
+                  </datalist>
+                </Field>
+                {selectedEmployee ? (
+                  <div className="flex items-center gap-3 rounded-lg bg-slate-50 p-3">
+                    <Avatar name={selectedEmployee.name} />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-slate-900">
+                        {selectedEmployee.name}
+                      </p>
+                      <p className="truncate text-xs text-slate-500">
+                        {selectedEmployee.position},{" "}
+                        {selectedEmployee.department}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    Choose an ID from the suggestions to load employee details.
+                  </p>
+                )}
+              </section>
+
+              <section className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-slate-900">
+                    Leave details
+                  </h3>
+                </div>
+                <Field label="Leave type">
+                  <select
+                    value={form.leave_type}
+                    onChange={(event) => {
+                      const leaveType = event.target.value;
+                      const isEarly = leaveType === EARLY_LEAVE;
+                      setForm({
+                        ...form,
+                        leave_type: leaveType,
+                        other_leave_type:
+                          leaveType === PERSONAL_LEAVE
+                            ? form.other_leave_type
+                            : "",
+                        early_leave_time: isEarly ? form.early_leave_time : "",
+                        half_day_period: isEarly ? "" : form.half_day_period,
+                        end_date: isEarly ? form.start_date : form.end_date,
+                      });
+                    }}
+                    required
+                    className={selectClass}
+                  >
+                    <option value="">Select leave type</option>
+                    {leaveTypes.map((type) => (
+                      <option key={type}>{type}</option>
+                    ))}
+                  </select>
+                </Field>
+                {form.leave_type === PERSONAL_LEAVE && (
+                  <Field label="Specify leave type">
+                    <Input
+                      value={form.other_leave_type}
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          other_leave_type: event.target.value,
+                        })
+                      }
+                      placeholder="Enter the specific leave type"
+                      maxLength={150}
+                      required
+                    />
+                  </Field>
+                )}
+                {form.leave_type === EARLY_LEAVE && (
+                  <Field label="Time of departure" required>
+                    <Input
+                      type="time"
+                      value={form.early_leave_time}
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          early_leave_time: event.target.value,
+                        })
+                      }
+                      required
+                    />
+                  </Field>
+                )}
+                {form.leave_type !== EARLY_LEAVE && (
+                  <Field label="Leave duration">
+                    <select
+                      value={form.half_day_period}
+                      onChange={(event) => {
+                        const halfDayPeriod = event.target.value as
+                          | "AM"
+                          | "PM"
+                          | "";
+                        setForm({
+                          ...form,
+                          half_day_period: halfDayPeriod,
+                          end_date: halfDayPeriod
+                            ? form.start_date
+                            : form.end_date,
+                        });
+                      }}
+                      className={selectClass}
+                    >
+                      <option value="">Full day</option>
+                      <option value="AM">Half day — AM</option>
+                      <option value="PM">Half day — PM</option>
+                    </select>
+                  </Field>
+                )}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Start date">
+                    <Input
+                      type="date"
+                      value={form.start_date}
+                      onChange={(event) => {
+                        const startDate = event.target.value;
+                        setForm({
+                          ...form,
+                          start_date: startDate,
+                          end_date:
+                            form.half_day_period ||
+                            form.leave_type === EARLY_LEAVE
+                              ? startDate
+                              : form.end_date,
+                        });
+                      }}
+                      required
+                    />
+                  </Field>
+                  <Field
+                    label="End date"
+                    hint={
+                      form.leave_type === EARLY_LEAVE
+                        ? "Early leave"
+                        : dayCount
+                          ? form.half_day_period
+                            ? `Half day (${form.half_day_period})`
+                            : pluralDays(dayCount)
+                          : undefined
+                    }
+                  >
+                    <Input
+                      type="date"
+                      min={form.start_date || undefined}
+                      value={form.end_date}
+                      disabled={
+                        !!form.half_day_period ||
+                        form.leave_type === EARLY_LEAVE
+                      }
+                      onChange={(event) =>
+                        setForm({ ...form, end_date: event.target.value })
+                      }
+                      required
+                    />
+                  </Field>
+                </div>
+                <Field label="Reason">
+                  <textarea
+                    value={form.reason}
+                    onChange={(event) =>
+                      setForm({ ...form, reason: event.target.value })
+                    }
+                    required
+                    maxLength={5000}
+                    rows={3}
+                    className={textareaClass}
+                  />
+                </Field>
+                <Field
+                  label="Proof (optional)"
+                  hint={
+                    editing?.has_proof
+                      ? "An attachment is already saved. Uploading a new file replaces it."
+                      : "PDF, JPG or PNG."
+                  }
+                >
+                  <Input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        proof: event.target.files?.[0] || null,
+                      })
+                    }
+                  />
+                </Field>
+              </section>
+            </div>
+            <DialogFooter className="border-t border-slate-200 px-6 py-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setFormOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={saving || !selectedEmployee}
+                className="bg-[#0e7490] text-white hover:bg-[#0c4a6e]"
+              >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {editing ? "Save changes" : "Submit leave"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Leave types */}
+      <Dialog open={typeDialogOpen} onOpenChange={setTypeDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add leave type</DialogTitle>
+            <DialogDescription>
+              Existing types and records stay as they are.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={addLeaveType} className="space-y-4">
+            <Field label="Leave type name">
+              <Input
+                value={newLeaveType}
+                onChange={(event) => setNewLeaveType(event.target.value)}
+                maxLength={100}
+                required
+                placeholder="e.g. Study leave"
+              />
+            </Field>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setTypeDialogOpen(false)}
+              >
+                Close
+              </Button>
+              <Button
+                type="submit"
+                disabled={savingType}
+                className="bg-[#0e7490] text-white hover:bg-[#0c4a6e]"
+              >
+                {savingType ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : null}
+                Add type
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Leave details */}
+      <Dialog
+        open={!!selectedRecord}
+        onOpenChange={(open) => !open && setSelectedRecord(null)}
+      >
+        <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto overflow-x-hidden">
+          {selectedRecord && (
+            <>
+              <DialogHeader>
+                <div className="flex items-center gap-3 pr-6">
+                  <Avatar name={selectedRecord.employee_name} />
+                  <div className="min-w-0 flex-1 text-left">
+                    <DialogTitle className="truncate">
+                      {selectedRecord.employee_name}
+                    </DialogTitle>
+                    <DialogDescription className="truncate">
+                      {selectedRecord.employee_number},{" "}
+                      {selectedRecord.position}, {selectedRecord.department}
+                      {isInactive(selectedRecord) && " · Inactive"}
+                    </DialogDescription>
+                  </div>
+                  <StatusBadge status={selectedRecord.status} />
+                </div>
+              </DialogHeader>
+
+              <dl className="grid gap-x-6 gap-y-4 rounded-lg bg-slate-50 p-4 sm:grid-cols-2">
+                {[
+                  ["Leave type", leaveTypeLabel(selectedRecord)],
+                  [
+                    "Dates",
+                    `${formatRange(selectedRecord.start_date, selectedRecord.end_date)} (${leaveDurationLabel(selectedRecord)})`,
+                  ],
+                  [
+                    "Last updated",
+                    format(
+                      new Date(selectedRecord.updated_at),
+                      "MMM d, yyyy p",
+                    ),
+                  ],
+                ].map(([label, value]) => (
+                  <div key={label}>
+                    <dt className="text-xs text-slate-500">{label}</dt>
+                    <dd className="mt-0.5 text-sm font-medium text-slate-900">
+                      {value}
+                    </dd>
+                  </div>
+                ))}
+                <div className="sm:col-span-2">
+                  <dt className="text-xs text-slate-500">Reason</dt>
+                  <dd className="mt-0.5 whitespace-pre-wrap text-sm text-slate-900">
+                    {selectedRecord.reason}
+                  </dd>
+                </div>
+              </dl>
+
+              <Field
+                label="Approved by"
+                required={selectedRecord.status === PENDING}
+                hint="Only supervisors from the same department and higher management are listed."
+              >
+                <select
+                  value={detailApprover}
+                  onChange={(event) => setDetailApprover(event.target.value)}
+                  className={`${selectClass} min-w-0 max-w-full truncate`}
+                >
+                  <option value="">
+                    {selectedRecord.status === PENDING
+                      ? "Select approver"
+                      : "Not assigned"}
+                  </option>
+                  {approvers.map((approver) => (
+                    <option
+                      key={approver.id}
+                      value={approver.id}
+                      title={`${approver.name}, ${approver.position} (${approver.department})`}
+                    >
+                      {approver.name}
+                    </option>
+                  ))}
+                </select>
+                {(() => {
+                  const chosen = approvers.find(
+                    (a) => String(a.id) === detailApprover,
+                  );
+                  return chosen ? (
+                    <span className="block break-words text-xs font-normal text-slate-600">
+                      {chosen.position} ({chosen.department})
+                    </span>
+                  ) : null;
+                })()}
+              </Field>
+
+              <p className="text-xs text-slate-500">
+                Requested{" "}
+                {format(new Date(selectedRecord.created_at), "MMM d, yyyy p")}
+              </p>
+
+              {selectedRecord.has_proof && (
+                <div className="flex items-center gap-4 self-start">
+                  <button
+                    onClick={() => void viewProof(selectedRecord)}
+                    className="inline-flex items-center gap-2 text-sm font-medium text-cyan-700 hover:underline"
+                  >
+                    <Eye className="h-4 w-4" /> View proof
+                  </button>
+                  <button
+                    onClick={() => void downloadProof(selectedRecord)}
+                    className="inline-flex items-center gap-2 text-sm font-medium text-cyan-700 hover:underline"
+                  >
+                    <Download className="h-4 w-4" /> Download
+                  </button>
+                </div>
+              )}
+
+              <DialogFooter className="flex-col gap-4 border-t border-slate-200 pt-4 sm:flex-col sm:items-stretch sm:justify-start sm:space-x-0">
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-slate-500">Mark as</p>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {MARK_OPTIONS.map((option) => {
+                      const isCurrent = option === selectedRecord.status;
+
+                      // Leave Credits: dapat eligible (1 year from regularization) at may sapat na credits
+                      const canUseCredits =
+                        !!creditInfo?.eligible &&
+                        (creditInfo.remaining >=
+                          selectedRecord.number_of_days ||
+                          selectedRecord.status === APPROVED_CREDITS);
+                      const creditsLocked =
+                        option === APPROVED_CREDITS && !canUseCredits;
+
+                      return (
+                        <Button
+                          key={option}
+                          size="sm"
+                          variant="outline"
+                          className={`justify-start gap-2 ${
+                            isCurrent
+                              ? "border-cyan-600 bg-cyan-50 text-cyan-900 disabled:opacity-100"
+                              : ""
+                          }`}
+                          title={
+                            creditsLocked
+                              ? "Not eligible for leave credits yet"
+                              : undefined
+                          }
+                          disabled={
+                            isCurrent ||
+                            (isApproved(option) && !detailApprover) ||
+                            creditsLocked ||
+                            (option === APPROVED_CREDITS && creditLoading)
+                          }
+                          aria-current={isCurrent ? "true" : undefined}
+                          onClick={() =>
+                            void updateStatus(selectedRecord, option)
+                          }
+                        >
+                          <span
+                            className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT[option]}`}
+                          />
+                          {option}
+                        </Button>
+                      );
+                    })}
+                  </div>
+
+                  {!detailApprover && (
+                    <p className="text-xs text-slate-500">
+                      Select an approver to enable the approved options.
+                    </p>
+                  )}
+                  {/* <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                    <span className="font-medium text-slate-500">
+                      Leave credits:{" "}
+                    </span>
+                    {creditLoading ? (
+                      <span className="text-slate-500">Loading…</span>
+                    ) : !creditInfo ? (
+                      <span className="text-slate-500">
+                        No leave credit record found (not a regular employee).
+                      </span>
+                    ) : !creditInfo.eligible ? (
+                      <span className="text-slate-700">
+                        Not yet eligible
+                        {creditInfo.eligible_on
+                          ? ` (unlocks ${format(new Date(`${creditInfo.eligible_on}T00:00:00`), "MMM d, yyyy")}, 1 year after regularization)`
+                          : ""}
+                        .
+                      </span>
+                    ) : (
+                      <span className="text-slate-900">
+                        <span className="font-semibold">
+                          {creditInfo.remaining}
+                        </span>{" "}
+                        {creditInfo.remaining === 1 ? "day" : "days"} remaining
+                        · this leave: {leaveDurationLabel(selectedRecord)}
+                        {creditInfo.remaining < selectedRecord.number_of_days &&
+                          selectedRecord.status !== APPROVED_CREDITS &&
+                          " (not enough to cover it)"}
+                      </span>
+                    )}
+                  </div> */}
+                </div>
+
+                <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-rose-700 hover:bg-rose-50 hover:text-rose-800"
+                    onClick={() => void deleteRecord(selectedRecord)}
+                  >
+                    <Trash2 className="h-4 w-4" /> Delete
+                  </Button>
+
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void openEdit(selectedRecord)}
+                    >
+                      <Pencil className="h-4 w-4" /> Edit leave
+                    </Button>
+                    {selectedRecord.status !== CANCELLED && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          void updateStatus(selectedRecord, CANCELLED)
+                        }
+                      >
+                        <X className="h-4 w-4" /> Cancel leave
+                      </Button>
+                    )}
+                    {isApproved(selectedRecord.status) && (
+                      <Button
+                        size="sm"
+                        className="bg-[#0e7490] text-white hover:bg-[#0c4a6e]"
+                        disabled={
+                          savingApprover ||
+                          detailApprover ===
+                            (selectedRecord.approved_by
+                              ? String(selectedRecord.approved_by)
+                              : "")
+                        }
+                        onClick={() => void saveApprover(selectedRecord)}
+                      >
+                        {savingApprover ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : null}
+                        Update approver
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </section>
+  );
+}
