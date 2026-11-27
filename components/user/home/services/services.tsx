@@ -378,58 +378,76 @@ function ServiceCtaButtons({
  * self-stretch here.
  * ========================================================================== */
 
+function ProblemCard({ problem }: { problem: ProblemItem }) {
+  const [flipped, setFlipped] = useState(false);
+
+  return (
+    <div
+      className="group h-full [perspective:1200px] cursor-pointer"
+      onClick={() => setFlipped((f) => !f)}
+      role="button"
+      aria-pressed={flipped}
+    >
+      {/* Both faces share one grid cell, so height = the taller face (no fixed h-44) */}
+      <div
+        className={`grid  h-full min-h-[11rem] transition-transform duration-500 ease-out [transform-style:preserve-3d] md:group-hover:[transform:rotateY(180deg)] ${
+          flipped ? "[transform:rotateY(180deg)] md:[transform:none]" : ""
+        } ${flipped ? "md:group-hover:[transform:rotateY(180deg)]" : ""}`}
+      >
+        {/* Front face */}
+        <div className="[grid-area:1/1] flex flex-col sm:flex-row items-start gap-3 rounded-lg bg-white border border-gray-200 p-3 sm:p-4 [backface-visibility:hidden]">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-50">
+            {problem.image ? (
+              <img
+                src={problem.image}
+                alt=""
+                className="h-6 w-6 object-contain"
+              />
+            ) : problem.icon ? (
+              <problem.icon className="h-5 w-5 text-red-600" />
+            ) : null}
+          </div>
+          <div className="min-w-0 flex flex-col flex-1">
+            <p className="font-semibold text-sm text-primary mb-1 break-words">
+              {problem.label}
+            </p>
+            {problem.consequence && (
+              <p className="text-xs text-gray-500 leading-relaxed mb-2">
+                {problem.consequence}
+              </p>
+            )}
+            {problem.stat && (
+              <span className="mt-auto inline-block w-fit max-w-full rounded-full bg-red-50 px-2.5 py-1 text-[10px] sm:text-[11px] font-mono font-semibold text-red-700 leading-tight">
+                {problem.stat}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Back face */}
+        <div className="[grid-area:1/1] flex items-center justify-center rounded-lg bg-white border border-gray-200 p-4 [backface-visibility:hidden] [transform:rotateY(180deg)]">
+          {problem.image ? (
+            <img
+              src={problem.image}
+              alt={problem.label}
+              className="h-20 w-20 sm:h-24 sm:w-24 object-contain"
+            />
+          ) : problem.icon ? (
+            <problem.icon className="h-16 w-16 text-red-500" />
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ServiceProblemList({ problems }: { problems?: ProblemItem[] }) {
   if (!problems || problems.length === 0) return null;
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div className="grid grid-cols-1 min-[420px]:grid-cols-2 lg:grid-cols-4 gap-3 items-stretch">
       {problems.map((problem) => (
-        <div key={problem.label} className="group h-44 [perspective:1200px]">
-          <div className="relative h-full w-full transition-transform duration-500 ease-out [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)]">
-            {/* Front face — icon + copy, same layout as before */}
-            <div className="absolute inset-0 flex items-start gap-3.5 rounded-lg bg-white border border-gray-200 p-4 [backface-visibility:hidden]">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-50">
-                {problem.image ? (
-                  <img
-                    src={problem.image}
-                    alt=""
-                    className="h-6 w-6 object-contain"
-                  />
-                ) : problem.icon ? (
-                  <problem.icon className="h-5 w-5 text-red-600" />
-                ) : null}
-              </div>
-              <div className="min-w-0">
-                <p className="font-semibold text-sm text-primary mb-1">
-                  {problem.label}
-                </p>
-                {problem.consequence && (
-                  <p className="text-xs text-gray-500 leading-relaxed mb-2">
-                    {problem.consequence}
-                  </p>
-                )}
-                {problem.stat && (
-                  <span className="inline-block rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-mono font-semibold text-red-700">
-                    {problem.stat}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* Back face — the actual image, revealed when the card flips on hover */}
-            <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-white border border-gray-200 p-4 [backface-visibility:hidden] [transform:rotateY(180deg)]">
-              {problem.image ? (
-                <img
-                  src={problem.image}
-                  alt={problem.label}
-                  className="h-24 w-24 object-contain"
-                />
-              ) : problem.icon ? (
-                <problem.icon className="h-20 w-20 text-red-500" />
-              ) : null}
-            </div>
-          </div>
-        </div>
+        <ProblemCard key={problem.label} problem={problem} />
       ))}
     </div>
   );
@@ -1573,7 +1591,7 @@ function WebsiteSolutionsSection({
             <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
               <PlanFaqAccordion />
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 min-[420px]:grid-cols-2 gap-4">
                 {packages.map((pkg) => (
                   <PricingCard key={pkg.name} pkg={pkg} />
                 ))}
@@ -2574,7 +2592,7 @@ function ServiceTabNav({
               role="tab"
               aria-selected={isActive}
               onClick={() => onChange(tab.title)}
-              className="group relative flex shrink-0 items-center gap-2.5 px-5 py-4 text-left transition-colors"
+              className="group relative flex flex-1 flex-col sm:flex-row shrink-0 items-center justify-center gap-1 sm:gap-2.5 px-3 sm:px-5 py-3 sm:py-4 text-center sm:text-left transition-colors"
             >
               <span
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors"

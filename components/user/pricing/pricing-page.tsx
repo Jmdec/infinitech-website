@@ -30,7 +30,7 @@ const STORAGE_ADDON_PRICE_PHP: Record<StorageTier, number> = {
   "50": 2500,
   "100": 3500,
 };
-
+const storageGb = (t: StorageTier) => (t === "7" ? 5 : Number(t));
 const PricingPage = () => {
   const [activeService, setActiveService] = useState("website");
   const [billingPeriod, setBillingPeriod] = useState<
@@ -417,7 +417,9 @@ const PricingPage = () => {
         currency,
         billingPeriod: activeService === "juantap" ? "piece" : billingPeriod,
         storageLabel:
-          activeService === "website" ? `${storageTier}GB Storage` : undefined,
+          activeService === "website"
+            ? `${storageGb(storageTier)}GB Storage`
+            : undefined,
       },
     ]);
   };
@@ -482,7 +484,9 @@ const PricingPage = () => {
       <div className="mt-3 flex flex-col gap-2">
         <p className="text-xs text-slate-400">
           Storage:{" "}
-          <span className="text-slate-200 font-medium">{selected}GB</span>
+          <span className="text-slate-200 font-medium">
+            {storageGb(selected)}GB
+          </span>
           {selected === "7" ? " (included)" : " (upgraded)"}
         </p>
         <div className="flex gap-2 flex-wrap">
@@ -597,175 +601,40 @@ const PricingPage = () => {
       )}
 
       {showMobileLayout && activeService !== "socialmedia" && (
-        <section className="mx-auto px-6 flex flex-col pb-10 items-center">
-          {/* Controls row now sits directly above the cards, left-aligned */}
-          <div className="w-full mb-5">{controlsRow}</div>
+        <section className="mx-auto w-full px-4 sm:px-6 pb-10">
+          <div className="mb-5">{controlsRow}</div>
 
-          <div className="flex-1">
-            <div className="relative">
-              <div className="py-8" onClick={() => setSelectedCardIndex(null)}>
+          <div
+            className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-10 items-stretch pt-4"
+            onClick={() => setSelectedCardIndex(null)}
+          >
+            {currentPlans.map((plan, index) => {
+              const isSelected = selectedCardIndex === index;
+
+              return (
                 <div
-                  className={
-                    selectedCardIndex === null
-                      ? "flex justify-center gap-6 flex-wrap transition-all duration-300"
-                      : "flex items-stretch justify-center gap-4 transition-all duration-500"
-                  }
+                  key={index}
+                  className="flex flex-col w-full sm:last:odd:col-span-2 sm:last:odd:w-[calc(50%-0.75rem)] sm:last:odd:justify-self-center [&>*:first-child]:!w-full [&>*:first-child]:!max-w-none [&>*:first-child]:flex-1"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedCardIndex(isSelected ? null : index);
+                  }}
                 >
-                  {currentPlans.map((plan, index) => {
-                    const isSelected = selectedCardIndex === index;
-                    const isCollapsed =
-                      selectedCardIndex !== null && index !== selectedCardIndex;
-
-                    return (
-                      <div
-                        key={index}
-                        className={`
-                          transition-all duration-500
-                          ${isSelected ? "z-20" : ""}
-                          ${isCollapsed ? "z-10 flex flex-col" : ""}
-                        `}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedCardIndex(isSelected ? null : index);
-                        }}
-                      >
-                        <PricingCard
-                          plan={getDisplayPlan(plan)}
-                          billingPeriod={
-                            activeService === "juantap"
-                              ? "piece"
-                              : billingPeriod
-                          }
-                          currency={currency}
-                          onAddToCart={() => handleAddToCart(plan)}
-                          isHovered={isSelected}
-                          isSmall={isCollapsed}
-                        />
-                        {activeService === "website" &&
-                          !isCollapsed &&
-                          renderStorageSelector(plan.name)}
-                      </div>
-                    );
-                  })}
+                  <PricingCard
+                    plan={getDisplayPlan(plan)}
+                    billingPeriod={
+                      activeService === "juantap" ? "piece" : billingPeriod
+                    }
+                    currency={currency}
+                    onAddToCart={() => handleAddToCart(plan)}
+                    isHovered={isSelected}
+                    isSmall={false}
+                  />
+                  {activeService === "website" &&
+                    renderStorageSelector(plan.name)}
                 </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Order Summary Sidebar */}
-          <div className="w-full lg:w-80 lg:fixed lg:right-8 lg:top-24 lg:h-fit">
-            <div
-              id="order-summary"
-              className="bg-slate-800/70 border border-slate-700 rounded-2xl p-5"
-            >
-              <div className="flex items-center gap-2 mb-4">
-                <ShoppingCart className="w-5 h-5 text-cyan-400" />
-                <h3 className="text-lg font-bold text-white">Order Summary</h3>
-              </div>
-
-              {cart.length === 0 ? (
-                <div className="text-center py-8">
-                  <ShoppingCart className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-                  <p className="text-slate-400 text-sm">Your cart is empty</p>
-                  <p className="text-slate-500 text-xs mt-1">
-                    Add plans to get started
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <div className="space-y-3 mb-4 max-h-64 overflow-y-auto">
-                    {cart.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-start justify-between gap-2 bg-slate-700/50 rounded-lg p-3"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <p className="text-white font-medium text-sm truncate">
-                            {item.planName}
-                          </p>
-                          <p className="text-slate-400 text-xs">
-                            {getServiceTitle(item.service)}
-                            {item.storageLabel ? ` · ${item.storageLabel}` : ""}
-                          </p>
-                          <p className="text-cyan-400 text-xs font-semibold">
-                            {currencySymbol(item.currency)}
-                            {formatPrice(item.price, item.currency)}
-                            {item.billingPeriod === "piece"
-                              ? " / piece"
-                              : ` / ${item.billingPeriod === "yearly" ? "year" : "mo"}`}
-                          </p>
-                        </div>
-                        <button
-                          onClick={() =>
-                            removeFromCart(item.planName, item.service)
-                          }
-                          className="text-slate-400 hover:text-red-400 transition-colors p-1 flex-shrink-0"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="border-t border-slate-600 pt-4">
-                    {cartHasMixedCurrencies && (
-                      <p className="text-amber-400 text-xs mb-2">
-                        Cart has items in different currencies — total below
-                        mixes them.
-                      </p>
-                    )}
-                    <div className="flex justify-between items-center mb-4">
-                      <span className="text-slate-300 font-semibold">
-                        Total:
-                      </span>
-                      <span className="text-2xl font-bold text-cyan-400">
-                        {currencySymbol(currency)}
-                        {formatPrice(cartTotal, currency)}
-                      </span>
-                    </div>
-
-                    <div className="space-y-3">
-                      <input
-                        type="email"
-                        placeholder="Client email"
-                        value={clientEmail}
-                        onChange={(e) => setClientEmail(e.target.value)}
-                        className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-white placeholder-slate-400 focus:outline-none focus:border-cyan-500 text-sm"
-                      />
-                      <button
-                        onClick={() => {}}
-                        disabled={isSending}
-                        className="w-full px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-semibold hover:from-cyan-600 hover:to-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 text-sm"
-                      >
-                        {isSending ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Sending...
-                          </>
-                        ) : (
-                          <>
-                            <Mail className="w-4 h-4" />
-                            Send Summary
-                          </>
-                        )}
-                      </button>
-
-                      {emailStatus && (
-                        <div
-                          className={`p-3 rounded-lg text-sm ${
-                            emailStatus.type === "success"
-                              ? "bg-green-500/20 text-green-300 border border-green-500/50"
-                              : "bg-red-500/20 text-red-300 border border-red-500/50"
-                          }`}
-                        >
-                          {emailStatus.message}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
+              );
+            })}
           </div>
         </section>
       )}
